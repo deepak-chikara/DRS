@@ -24,16 +24,16 @@ hsvVals = {
     "vmax": 255,
 }
 
-tuned_rgb_lower = np.array([112, 0, 181])
+tuned_rgb_lower = np.array([112, 0, 181]) # Adjusted lower bound for batsman detection for RED, GREEN, BLUE
 tuned_rgb_upper = np.array([255, 255, 255])
 
-tuned_canny_threshold1 = 100
+tuned_canny_threshold1 = 100 #for detection of the edgtunedes
 tuned_canny_threshold2 = 200
 
 cap = cv2.VideoCapture(r"lbw.mp4")  # Path to your video file
 # cap = cv2.VideoCapture("http://your-ip:port/video")
 #cap = cv2.VideoCapture(0)   # for webcam
-cap2 = cv2.VideoCapture(1)   # side camera
+#cap2 = cv2.VideoCapture(1)   # side camera
 
 # ===== VIDEO CONTROL =====
 paused = False
@@ -66,6 +66,7 @@ lbw_detected = False
 
 while True:
     x_prev = x
+
     y_prev = y
 
     # ===== SMOOTH BALL =====
@@ -244,6 +245,21 @@ while True:
         cv2.circle(all, impact_point, 10, (0, 0, 255), -1)
         cv2.putText(all, "Impact", impact_point,
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2) 
+   
+    # ===== LBW RESULT DISPLAY ===== 
+    if impact_point is not None:
+        if lbw_detected:
+            cv2.putText(all, "LBW OUT", (50, 150),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+             
+        else:
+            cv2.putText(all, "NOT OUT", (50, 150),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
+             
+    else:
+        cv2.putText(all, "DECISION PENDING", (50, 150),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 0), 3)
+         
 
     # ===== DISPLAY =====
     imgStack = cvzone.stackImages([
@@ -279,3 +295,4 @@ if lbw_detected:
     print("\nPotential LBW Detected!")
 else:
     print("\nNo LBW Detected")
+
