@@ -1,4 +1,4 @@
-﻿from pitch import pitch
+from pitch import pitch
 from batsman import batsman_detect
 from ball_detect import ball_detect
 import numpy as np
@@ -11,6 +11,8 @@ pitch_point = None
 impact_point = None
 impact_locked = False
 pitch_counter = 0
+
+trajectory_points = []
 
 mycolorFinder = ColorFinder(False)
 hsvVals = {
@@ -31,6 +33,7 @@ tuned_canny_threshold2 = 200
 cap = cv2.VideoCapture(r"lbw.mp4")  # Path to your video file
 # cap = cv2.VideoCapture("http://your-ip:port/video")
 #cap = cv2.VideoCapture(0)   # for webcam
+cap2 = cv2.VideoCapture(1)   # side camera
 
 # ===== VIDEO CONTROL =====
 paused = False
@@ -65,6 +68,19 @@ while True:
     x_prev = x
     y_prev = y
 
+    # ===== SMOOTH BALL =====
+    if x != 0 and y != 0 and x_prev != 0 and y_prev != 0:
+        x = int(0.6 * x_prev + 0.4 * x)
+        y = int(0.6 * y_prev + 0.4 * y)
+    # =======================
+
+    # ===== REMOVE NOISE =====
+    if x_prev != 0 and abs(x - x_prev) > 50:
+        x = x_prev
+    if y_prev != 0 and abs(y - y_prev) > 50:
+        y = y_prev
+    # ========================
+
     # ===== VIDEO CONTROL =====
     if not paused:
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
@@ -82,6 +98,18 @@ while True:
 
     # ===== BALL DETECTION =====
     ballContour, x, y = ball_detect(img, mycolorFinder, hsvVals)
+
+
+    # ===== CLEAN TRAJECTORY =====
+    if x != 0 and y != 0:
+        trajectory_points.append((x, y))
+    else:
+        trajectory_points.clear()   # reset if ball lost
+    
+    if len(trajectory_points) > 10:
+        trajectory_points.pop(0)
+    # ============================
+
     all = ballContour.copy() if ballContour is not None else img.copy()
 
     # ===== BATSMAN =====
@@ -166,10 +194,56 @@ while True:
         cv2.putText(all, "Pitch", pitch_point,
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
 
+        # ===== DRAW TRAJECTORY =====
+    for i in range(1, len(trajectory_points)):
+        cv2.line(all, trajectory_points[i-1], trajectory_points[i], (0,255,255), 2)
+    # =========================== 
+
+    # ===== CORRECT TRAJECTORY PREDICTION =====
+    if len(trajectory_points) >= 5 and impact_point is not None:
+    
+        y_vals = [p[1] for p in trajectory_points]
+        x_vals = [p[0] for p in trajectory_points]
+    
+        try:
+            # Fit curve: y → x (correct direction)
+            curve = np.polyfit(y_vals, x_vals, 2)
+    
+            # Predict future downward motion
+            future_y = np.linspace(y_vals[-1], y_vals[-1] + 200, 20)
+            future_x = np.polyval(curve, future_y)
+    
+            # Draw predicted path
+            for i in range(len(future_x)-1):
+                pt1 = (int(future_x[i]), int(future_y[i]))
+                pt2 = (int(future_x[i+1]), int(future_y[i+1]))
+                cv2.line(all, pt1, pt2, (255, 0, 255), 2)
+    
+            # ===== STUMP CHECK =====
+            hit_stumps = False
+    
+            for fx, fy in zip(future_x, future_y):
+                if stump_x1 <= fx <= stump_x2:
+                    hit_stumps = True
+                    break
+    
+            if hit_stumps:
+                cv2.putText(all, "HITTING STUMPS", (50,100),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 3)
+            else:
+                cv2.putText(all, "MISSING STUMPS", (50,100),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 3)
+    
+        except:
+            pass
+    # ============================================
+
+    # =================================
+
     if impact_point is not None:
         cv2.circle(all, impact_point, 10, (0, 0, 255), -1)
         cv2.putText(all, "Impact", impact_point,
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2) 
 
     # ===== DISPLAY =====
     imgStack = cvzone.stackImages([
@@ -178,6 +252,9 @@ while True:
         batsmanImg,
         all
     ], 2, 0.5)
+
+    cv2.putText(imgStack, "SPACE: Pause | A: Back | D: Forward | Q: Quit",
+            (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 1)
 
     cv2.imshow("stack", imgStack)
 
