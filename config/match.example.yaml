@@ -1,0 +1,25 @@
+# Example match session — copy and customize per fixture
+
+mode: live
+
+session:
+  ground_name: "Riverside CC"
+  calibration_file: "config/calibration/riverside.json"
+  log_dir: "sessions"
+  review_delay_seconds: 7
+
+cameras:
+  primary:
+    name: leg_side
+    type: rtsp
+    source: "rtsp://192.168.1.10:554/stream1"
+    enabled: true
+  secondary:
+    name: straight_side
+    type: usb
+    source: 1
+    enabled: true
+
+detection:
+  mode: hybrid
+  yolo_model: "yolov8n.pt"

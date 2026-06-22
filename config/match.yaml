@@ -1,0 +1,21 @@
+# Live camera config — copy and edit camera index or RTSP URL
+
+mode: live
+
+cameras:
+  primary:
+    type: usb
+    source: 0
+    enabled: true
+  secondary:
+    type: usb
+    source: 1
+    enabled: false
+
+detection:
+  mode: hybrid
+
+live:
+  detection_mode: hybrid
+
+buffer_seconds: 30

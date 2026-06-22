@@ -1,0 +1,49 @@
+# DRS configuration — see docs/USER_GUIDE.md for full explanation
+
+mode: file  # file = recorded video | live = USB/RTSP cameras
+
+video: "lbw.mp4"
+
+detection:
+  mode: color  # color (fast) | hybrid (live, needs YOLO)
+
+ball:
+  hsv:
+    hmin: 10
+    smin: 44
+    vmin: 192
+    hmax: 125
+    smax: 114
+    vmax: 255
+
+batsman:
+  rgb_lower: [112, 0, 181]
+  rgb_upper: [255, 255, 255]
+
+thresholds:
+  pitch_area_min: 50000
+  batsman_area_min: 5000
+  pitch_stable_frames: 5
+  impact_distance_px: 15
+  impact_batleg_px: 25
+
+performance:
+  detection_scale: 0.5
+  pitch_cache_frames: 30
+
+buffer_seconds: 30
+
+# --- Live cameras only (ignore for recorded video) ---
+cameras:
+  primary:
+    type: usb
+    source: 0
+    enabled: true
+  secondary:
+    type: usb
+    source: 1
+    enabled: false
+
+live:
+  detection_mode: hybrid
+  config_file: "config/match.yaml"

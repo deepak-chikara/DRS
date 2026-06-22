@@ -1,0 +1,12 @@
+{
+  "ground_id": "example_ground",
+  "pitch_length_m": 20.12,
+  "pitch_width_m": 3.05,
+  "cameras": {
+    "leg_side": {
+      "homography": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+      "image_points": [[100, 200], [500, 200], [500, 800], [100, 800]],
+      "pitch_points": [[0, 0], [1, 0], [1, 1], [0, 1]]
+    }
+  }
+}

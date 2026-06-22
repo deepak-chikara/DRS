@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# IDE
+.vs/
+
+# Models (downloaded on first run)
+yolov8n.pt
+
+# Session output
+sessions/
+
+# Embedded Python runtime (do not commit)
+Lib/
+DLLs/
+Doc/
+include/
+libs/
+Scripts/
+tcl/
+python.exe
+pythonw.exe
+python*.dll
+vcruntime*.dll
+NEWS.txt
+LICENSE.txt

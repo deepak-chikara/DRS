@@ -1,0 +1,46 @@
+"""Mutable runtime state for DRS pipeline."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class BallState:
+    x: int = 0
+    y: int = 0
+    x_prev: int = 0
+    y_prev: int = 0
+    prev_x_diff: int = 0
+    prev_y_diff: int = 0
+    source: str = "none"  # yolo | color | tracker | fused
+    confidence: float = 0.0
+
+
+@dataclass
+class DRSState:
+    pitch_point: tuple[int, int] | None = None
+    impact_point: tuple[int, int] | None = None
+    impact_locked: bool = False
+    pitch_counter: int = 0
+    lbw_detected: bool = False
+    pad_detected: bool = False
+    last_motion_class: str = "Motion"
+    bat_leg: int = 10000
+    ball: BallState = field(default_factory=BallState)
+    fused_ball_pitch: tuple[float, float] | None = None
+    sync_quality_ms: float | None = None
+    delivery_count: int = 0
+    trajectory_points: list[tuple[float, float]] = field(default_factory=list)
+
+    def update_ball_prev(self) -> None:
+        b = self.ball
+        b.x_prev = b.x
+        b.y_prev = b.y
+
+    def update_ball_diff(self) -> None:
+        b = self.ball
+        if b.x_prev != 0 or b.y_prev != 0:
+            b.prev_x_diff = b.x - b.x_prev
+            b.prev_y_diff = b.y - b.y_prev
