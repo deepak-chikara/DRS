@@ -24,6 +24,8 @@ thresholds:
   pitch_area_min: 50000
   batsman_area_min: 5000
   pitch_stable_frames: 5
+  delivery_motion_min_px: 4
+  delivery_motion_frames: 2
   impact_distance_px: 15
   impact_batleg_px: 25
 
@@ -33,16 +35,8 @@ performance:
 
 buffer_seconds: 30
 
-# --- Live cameras only (ignore for recorded video) ---
-cameras:
-  primary:
-    type: usb
-    source: 0
-    enabled: true
-  secondary:
-    type: usb
-    source: 1
-    enabled: false
+ground_id: "default"
+calibration_file: ""   # e.g. config/calibration/club_ground.json
 
 live:
   detection_mode: hybrid

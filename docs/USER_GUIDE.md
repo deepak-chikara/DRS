@@ -24,7 +24,38 @@ Place your video in the `DRS` folder (e.g. `lbw.mp4`) or pass the path with `--v
 
 ---
 
-## 2. Quick start — recorded video
+## 2. Quick start — DRS Pro desktop app
+
+```powershell
+python main.py
+```
+
+This launches the **DRS Pro** Qt desktop application with:
+
+- Menu bar (File, Tools, Help)
+- Video panel with stump corridor overlays
+- Timeline slider and transport controls
+- Setup wizard on first run (calibrate stumps per ground)
+
+### Open a video
+
+**File → Open Video** or use the toolbar. Supported: `.mp4`, `.avi`, `.mov`.
+
+### Legacy OpenCV UI (developers)
+
+```powershell
+python main.py --legacy-opencv
+```
+
+### Command-line video path
+
+```powershell
+python main.py --video lbw-2.mp4
+```
+
+(Opens Qt app; set video in File → Open if not auto-loaded.)
+
+## 2b. Quick start — recorded video (legacy)
 
 ```powershell
 python main.py
@@ -37,17 +68,39 @@ python main.py --video lbw-2.mp4
 ```
 
 ### How it works
-1. Video **plays at normal speed** (no slow processing while playing).
-2. Press **Space** to **pause** on a delivery you want to check.
-3. While paused, DRS runs analysis and shows overlays on the single result view:
-   - Green = pitch outline
-   - Red = batsman outline
-   - Yellow lines = stump lines
-   - Cyan dot = ball
-   - Blue dot = pitch point (where ball bounced)
-   - Red dot = impact point (possible LBW)
-4. Use **J/K** or **A/D** to step frame-by-frame through the delivery.
-5. Press **Space** again to resume playing.
+1. Video plays with **stump lines**, **ball tracking**, and **batsman detection** on every frame.
+2. Yellow perspective lines = stump corridor (off-stump to off-stump, leg-stump to leg-stump). Lines stay **fixed** once set — they do not move when the batsman moves.
+3. When the ball hits the pad inside the corridor, DRS shows **OUT**; outside = **NOT OUT**; uncertain = **REVIEW**.
+4. Press **Space** to pause and step frame-by-frame with **J/K** or **A/D**.
+5. Press **R** to restart the video and reset the delivery state.
+
+**Important:** OUT/NOT OUT is an **assist** for club review — not an official umpire decision.
+
+### Calibrate stump lines (do once per ground)
+
+When you move the camera to a new ground, calibrate the stump corridor:
+
+**Option A — inline at app start:**
+```powershell
+python main.py --calibrate --ground-id riverside
+python main.py --calibrate --ground-id riverside --continue-after-calibrate
+```
+
+Click in order: **striker off**, **striker leg**, **bowler off**, **bowler leg** stump bases.  
+Saved to `config/calibration/riverside.json`.
+
+**Option B — standalone tool:**
+```powershell
+python tools/calibrate_pitch.py --video lbw.mp4 --ground-id riverside --stumps-only
+```
+
+Then add to `config/default.yaml`:
+```yaml
+ground_id: "riverside"
+calibration_file: "config/calibration/riverside.json"
+```
+
+Without calibration, DRS locks stump lines from the **first frame** of the video (before batsman movement). Press **R** to restart and re-lock. For best accuracy, calibrate once per ground (see above).
 
 ---
 
@@ -81,8 +134,12 @@ All controls are listed on the right side of the screen.
 
 Edit `config/default.yaml`:
 
+**File mode** uses the `video:` key only. Camera settings (`cameras:`) are for **live mode** — see `config/match.yaml`.
+
 ```yaml
 video: "lbw.mp4"        # default video file
+ground_id: "default"
+calibration_file: ""    # e.g. config/calibration/riverside.json
 
 detection:
   mode: color             # keep as color for recorded video (fast)
@@ -132,15 +189,18 @@ For two cameras, set `secondary.enabled: true` and the second camera index.
 
 | Overlay | Meaning |
 |---------|---------|
+| Yellow perspective lines | Stump corridor (calibrated or locked from first frame) |
 | Green contour | Detected pitch area |
 | Red contour | Detected batsman |
-| Yellow vertical lines | Stump line estimate |
 | Cyan dot | Current ball position |
 | Blue "Pitch" marker | Ball pitch point (bounce) |
 | Red "Impact" marker | Ball near batsman (possible contact) |
-| "LBW?" text | Impact detected — review manually |
+| **OUT** (red) | Pad contact inside stump corridor |
+| **NOT OUT** (green) | Pad contact outside stump corridor |
+| **REVIEW** (orange) | Uncertain — tune detection or calibrate stumps |
+| "LBW?" text | Impact suspected before verdict computed |
 
-DRS **assists** review; it does not make automatic umpire decisions.
+DRS **assists** review; it does not make automatic ICC umpire decisions.
 
 ---
 
@@ -158,7 +218,9 @@ DRS **assists** review; it does not make automatic umpire decisions.
 | Problem | Fix |
 |---------|-----|
 | Video won't open | Check file path; use `--video path\to\file.mp4` |
-| Playback still slow | Ensure you are not paused; playing mode skips analysis |
+| Playback slow | Lower `performance.detection_scale` in config (e.g. 0.35) |
+| Stump lines wrong | Run `python main.py --calibrate --ground-id your_ground` |
+| No OUT/NOT OUT shown | Pause on pad frame; calibrate stumps; tune ball/batsman |
 | No ball detected | Tune `ball.hsv` in config |
 | No batsman detected | Run `python batsman.py` and update config |
 | `ModuleNotFoundError` | Run `pip install -r requirements.txt` |
@@ -185,7 +247,22 @@ DRS/
 
 ---
 
-## 10. Advanced
+## 11. Building the Windows installer
+
+For vendors distributing DRS Pro:
+
+```powershell
+pip install pyinstaller
+pyinstaller build/drs.spec
+```
+
+Compile `build/installer.iss` with [Inno Setup 6](https://jrsoftware.org/isinfo.php).
+
+Output: `dist/installer/DRS-Pro-Setup-1.0.0.exe`
+
+Customer data lives in `%LOCALAPPDATA%\DRS` — not the install folder.
+
+## 12. Advanced
 
 **Different config file:**
 ```powershell

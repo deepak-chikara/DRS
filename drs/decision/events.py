@@ -38,6 +38,30 @@ class EventDetector:
 
     def __init__(self, config: DRSConfig):
         self.config = config
+        self._delivery_motion_frames = 0
+
+    def reset(self) -> None:
+        self._delivery_motion_frames = 0
+
+    def _ball_speed(self, state: DRSState) -> float:
+        b = state.ball
+        return float((b.prev_x_diff ** 2 + b.prev_y_diff ** 2) ** 0.5)
+
+    def _delivery_in_progress(self, state: DRSState) -> bool:
+        """True once the ball is moving toward the batsman (post-release)."""
+        b = state.ball
+        min_motion = self.config.delivery_motion_min_px
+        if b.x == 0 and b.y == 0:
+            self._delivery_motion_frames = 0
+            return False
+
+        toward_batsman = b.prev_y_diff >= min_motion
+        if self._ball_speed(state) >= min_motion and toward_batsman:
+            self._delivery_motion_frames += 1
+        else:
+            self._delivery_motion_frames = 0
+
+        return self._delivery_motion_frames >= self.config.delivery_motion_frames
 
     def process_frame(
         self,
@@ -48,6 +72,7 @@ class EventDetector:
         x = state.ball.x
         y = state.ball.y
         bat_leg = state.bat_leg
+        min_motion = self.config.delivery_motion_min_px
 
         motion_class, _, _ = ball_pitch_pad(
             x,
@@ -62,16 +87,21 @@ class EventDetector:
         if motion_class == "Pad":
             state.pad_detected = True
 
-        if state.pitch_point is None and x != 0 and y != 0:
-            for cnt in pitch_contours:
-                if cv2.contourArea(cnt) > self.config.pitch_area_min:
-                    inside = cv2.pointPolygonTest(cnt, (x, y), False)
-                    if inside >= 0:
-                        state.pitch_counter += 1
-                    else:
-                        state.pitch_counter = 0
-                    if state.pitch_counter > self.config.pitch_stable_frames:
-                        state.pitch_point = (x, y)
+        delivery_active = self._delivery_in_progress(state)
+
+        if state.pitch_point is None and delivery_active and x != 0 and y != 0:
+            if state.ball.prev_y_diff < min_motion:
+                state.pitch_counter = 0
+            else:
+                for cnt in pitch_contours:
+                    if cv2.contourArea(cnt) > self.config.pitch_area_min:
+                        inside = cv2.pointPolygonTest(cnt, (x, y), False)
+                        if inside >= 0:
+                            state.pitch_counter += 1
+                        else:
+                            state.pitch_counter = 0
+                        if state.pitch_counter > self.config.pitch_stable_frames:
+                            state.pitch_point = (x, y)
                         break
 
         current_bat_leg = 10000
@@ -83,7 +113,15 @@ class EventDetector:
                         current_bat_leg = bat_leg_candidate
         state.bat_leg = current_bat_leg
 
-        if not state.impact_locked and x != 0 and y != 0 and state.bat_leg != 10000:
+        if (
+            not state.impact_locked
+            and delivery_active
+            and state.pitch_point is not None
+            and x != 0
+            and y != 0
+            and state.bat_leg != 10000
+            and y >= state.pitch_point[1] - self.config.impact_batleg_px
+        ):
             for cnt in batsman_contours:
                 if cv2.contourArea(cnt) > self.config.batsman_area_min:
                     dist = cv2.pointPolygonTest(cnt, (x, y), True)

@@ -7,8 +7,10 @@ import numpy as np
 
 from drs.config import DRSConfig
 from drs.detectors.hybrid import HybridResult
+from drs.fusion.calibration import StumpPoints
 from drs.state import DRSState
 from drs.ui.playback import ON_SCREEN_CONTROLS
+from drs.ui.stumps import draw_stump_corridor
 
 
 def match_panel_height(img: np.ndarray, target_height: int) -> np.ndarray:
@@ -26,22 +28,16 @@ def draw_overlays(
     result: HybridResult,
     state: DRSState,
     config: DRSConfig,
+    stump_points: StumpPoints | None = None,
 ) -> np.ndarray:
-    """Draw all DRS overlays on a single result view."""
+    """Draw stump corridor, detection overlays, and verdict on a single result view."""
     out = img.copy()
+    if stump_points is not None and stump_points.is_valid():
+        out = draw_stump_corridor(out, stump_points, fill=True)
 
     for cnt in result.pitch_contours:
         if cv2.contourArea(cnt) > config.pitch_area_min:
             cv2.drawContours(out, cnt, -1, (0, 255, 0), 2)
-
-    if len(result.pitch_contours) > 0:
-        pitch_cnt = max(result.pitch_contours, key=cv2.contourArea)
-        px, py, w_box, h_box = cv2.boundingRect(pitch_cnt)
-        center_x = px + w_box // 2
-        stump_x1 = center_x - int(w_box * config.stump_width_ratio)
-        stump_x2 = center_x + int(w_box * config.stump_width_ratio)
-        cv2.line(out, (stump_x1, 0), (stump_x1, img.shape[0]), (255, 255, 0), 2)
-        cv2.line(out, (stump_x2, 0), (stump_x2, img.shape[0]), (255, 255, 0), 2)
 
     for cnt in result.batsman_contours:
         if cv2.contourArea(cnt) > config.batsman_area_min:
@@ -61,10 +57,32 @@ def draw_overlays(
     if state.last_motion_class != "Motion":
         cv2.putText(out, state.last_motion_class, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
 
-    if state.lbw_detected:
+    if state.lbw_detected and not state.verdict:
         cv2.putText(out, "LBW?", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
+    if state.verdict:
+        colors = {
+            "OUT": (0, 0, 255),
+            "NOT OUT": (0, 200, 0),
+            "REVIEW": (0, 165, 255),
+        }
+        color = colors.get(state.verdict, (255, 255, 255))
+        cv2.putText(out, state.verdict, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 3)
+        if state.verdict_reason:
+            cv2.putText(out, state.verdict_reason[:55], (10, 88), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
+
     return out
+
+
+def render_frame(
+    img: np.ndarray,
+    result: HybridResult,
+    state: DRSState,
+    config: DRSConfig,
+    stump_points: StumpPoints | None = None,
+) -> np.ndarray:
+    """Headless frame render for Qt (no sidebar)."""
+    return draw_overlays(img, result, state, config, stump_points)
 
 
 def draw_controls_panel(height: int, width: int = 260) -> np.ndarray:
@@ -120,7 +138,7 @@ def draw_status_banner(
     if frame_info:
         label += f"  |  {frame_info}"
     if playback_mode == "playing":
-        label += "  |  Space = pause & analyse"
+        label += "  |  Space = pause"
     cv2.putText(out, label, (10, out.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
     return out
 

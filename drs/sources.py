@@ -36,9 +36,23 @@ class VideoSource:
             self._cap = cv2.VideoCapture(str(self.source))
             self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         else:
-            self._cap = cv2.VideoCapture(str(self.source))
+            path = str(self.source)
+            self._cap = cv2.VideoCapture(path, cv2.CAP_FFMPEG)
+            if not self._cap.isOpened():
+                self._cap = cv2.VideoCapture(path)
 
         return self._cap is not None and self._cap.isOpened()
+
+    def probe(self) -> bool:
+        """Read one frame to verify the source decodes; rewind file sources to start."""
+        if self._cap is None:
+            return False
+        ret, frame = self.read()
+        if not ret or frame is None:
+            return False
+        if self.source_type == "file":
+            self.seek(0)
+        return True
 
     def read(self) -> tuple[bool, object | None]:
         if self._cap is None:
