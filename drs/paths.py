@@ -39,6 +39,12 @@ def user_clips_dir() -> Path:
     return path
 
 
+def user_matches_dir() -> Path:
+    path = user_data_dir() / "matches"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def user_sessions_dir() -> Path:
     path = user_data_dir() / "sessions"
     path.mkdir(parents=True, exist_ok=True)

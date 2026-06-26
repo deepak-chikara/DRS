@@ -32,6 +32,7 @@ class DRSState:
     sync_quality_ms: float | None = None
     delivery_count: int = 0
     trajectory_points: list[tuple[float, float]] = field(default_factory=list)
+    trajectory_pitch_points: list[tuple[float, float]] = field(default_factory=list)
     verdict: str = ""
     verdict_reason: str = ""
 
@@ -58,3 +59,5 @@ class DRSState:
         self.bat_leg = 10000
         self.verdict = ""
         self.verdict_reason = ""
+        self.trajectory_points.clear()
+        self.trajectory_pitch_points.clear()

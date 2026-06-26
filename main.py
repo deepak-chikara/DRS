@@ -31,7 +31,7 @@ def main() -> None:
 
     root = Path(__file__).resolve().parent
 
-    if args.legacy_opencv or args.live or args.calibrate:
+    if args.legacy_opencv or args.calibrate:
         _run_legacy_cli(args, root)
         return
 
@@ -47,6 +47,15 @@ def main() -> None:
         config.video_path = str(video_path)
         config.cameras["primary"] = CameraConfig("primary", "file", str(video_path), True)
         config.mode = "file"
+        save_config(config, user_config_path())
+
+    if args.live:
+        from drs.config import load_config
+        match_cfg = root / "config" / "match.yaml"
+        if match_cfg.is_file():
+            config = load_config(match_cfg)
+        else:
+            config.mode = "live"
         save_config(config, user_config_path())
 
     raise SystemExit(run(config))

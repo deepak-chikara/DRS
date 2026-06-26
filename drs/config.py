@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-from drs.paths import user_calibration_dir, user_clips_dir, user_config_path, user_sessions_dir
+from drs.paths import user_calibration_dir, user_clips_dir, user_config_path, user_matches_dir, user_sessions_dir
 
 @dataclass
 class CameraConfig:
@@ -48,6 +48,13 @@ class DRSConfig:
     fps_assumed: int = 30
     ground_id: str = "default"
     calibration_file: str = ""
+    recording_enabled: bool = True
+    recording_output_dir: str = ""
+    recording_segment_minutes: int = 45
+    recording_width: int | None = 1280
+    clip_pre_roll_seconds: float = 12.0
+    clip_post_roll_seconds: float = 8.0
+    diagram_enabled: bool = True
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -102,6 +109,11 @@ def load_config(path: str | Path) -> DRSConfig:
     else:
         detection_mode = detection.get("mode", "color")
 
+    recording = data.get("recording", {})
+    rec_dir = recording.get("output_dir", "")
+    if rec_dir and not Path(rec_dir).is_absolute():
+        rec_dir = str((base_dir / rec_dir).resolve())
+
     return DRSConfig(
         mode=mode,
         video_path=video,
@@ -128,6 +140,13 @@ def load_config(path: str | Path) -> DRSConfig:
         fps_assumed=30,
         ground_id=ground_id,
         calibration_file=calibration_file,
+        recording_enabled=recording.get("enabled", mode == "live"),
+        recording_output_dir=rec_dir,
+        recording_segment_minutes=recording.get("segment_minutes", 45),
+        recording_width=recording.get("width"),
+        clip_pre_roll_seconds=float(data.get("clip", {}).get("pre_roll_seconds", 12)),
+        clip_post_roll_seconds=float(data.get("clip", {}).get("post_roll_seconds", 8)),
+        diagram_enabled=data.get("diagram", {}).get("enabled", True),
         raw=data,
     )
 
@@ -158,6 +177,19 @@ def save_config(config: DRSConfig, path: str | Path) -> None:
     data.setdefault("performance", {})["detection_scale"] = config.detection_scale
     data["performance"]["pitch_cache_frames"] = config.pitch_cache_frames
     data["buffer_seconds"] = config.ring_buffer_seconds
+    data.setdefault("recording", {})
+    data["recording"].update({
+        "enabled": config.recording_enabled,
+        "output_dir": config.recording_output_dir,
+        "segment_minutes": config.recording_segment_minutes,
+        "width": config.recording_width,
+    })
+    data.setdefault("clip", {})
+    data["clip"].update({
+        "pre_roll_seconds": config.clip_pre_roll_seconds,
+        "post_roll_seconds": config.clip_post_roll_seconds,
+    })
+    data.setdefault("diagram", {})["enabled"] = config.diagram_enabled
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)

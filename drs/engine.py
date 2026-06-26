@@ -12,8 +12,10 @@ from drs.config import DRSConfig
 from drs.decision.events import EventDetector
 from drs.decision.verdict import VerdictEngine
 from drs.detectors.hybrid import HybridDetector
-from drs.fusion.calibration import PitchCalibration, StumpPoints
-from drs.paths import app_root, user_calibration_dir, user_clips_dir, user_sessions_dir
+from drs.fusion.calibration import PitchCalibration, StumpPoints, pixel_to_pitch
+from drs.paths import app_root, user_calibration_dir, user_clips_dir, user_matches_dir, user_sessions_dir
+from drs.recording.delivery_clip import DRSCallRecord, DeliveryClipExporter, export_drs_call_clip
+from drs.recording.match_recorder import MatchRecorder
 from drs.session.logger import ClipExporter, DeliveryRecord, SessionLog
 from drs.sources import ThreadedFrameGrabber, VideoSource
 from drs.state import DRSState
@@ -36,6 +38,11 @@ class DRSEngine:
         self.session_log = SessionLog(ground_name=config.ground_id or "DRS Session")
         clips = user_clips_dir() if config.session_log_dir == "sessions" else Path(config.session_log_dir) / "clips"
         self.clip_exporter = ClipExporter(clips)
+        self._delivery_clip_exporter = DeliveryClipExporter()
+        self._match_recorder: MatchRecorder | None = None
+        self._pitch_homography: np.ndarray | None = None
+        self._drs_call_pending: float | None = None
+        self._drs_delivery_id = 0
 
         hsv = config.ball_hsv or {
             "hmin": 10, "smin": 44, "vmin": 192,
@@ -64,7 +71,24 @@ class DRSEngine:
         self._stump_from_calibration = False
         self._last_verdict = ""
         self._last_analysis_frame = -1
+        self._prime_stumps_on_open = False
         self._load_calibration()
+
+    @property
+    def is_live(self) -> bool:
+        return self.config.mode == "live"
+
+    @property
+    def match_recording_path(self) -> Path | None:
+        if self._match_recorder:
+            return self._match_recorder.current_path
+        return None
+
+    @property
+    def recording_elapsed(self) -> float:
+        if self._match_recorder:
+            return self._match_recorder.elapsed_seconds
+        return 0.0
 
     @property
     def stump_points(self) -> StumpPoints | None:
@@ -130,6 +154,9 @@ class DRSEngine:
             logger.error("Could not load calibration: %s", cal_path)
             return
         self._stump_points = cal.get_stump_points("primary")
+        cam = cal.cameras.get("primary") or next(iter(cal.cameras.values()), None)
+        if cam is not None:
+            self._pitch_homography = cam.homography
         if self._stump_points:
             self._stump_points_locked = True
             self._stump_from_calibration = True
@@ -147,6 +174,21 @@ class DRSEngine:
             self._video_fps = 30.0
             self.reset_delivery()
             self.reset_auto_stump_lock()
+            if self.config.recording_enabled:
+                out_dir = (
+                    Path(self.config.recording_output_dir)
+                    if self.config.recording_output_dir
+                    else user_matches_dir()
+                )
+                self._match_recorder = MatchRecorder(
+                    self.config.ground_id,
+                    self._video_fps,
+                    enabled=True,
+                    output_dir=out_dir,
+                    segment_minutes=self.config.recording_segment_minutes,
+                    record_width=self.config.recording_width,
+                )
+                self._match_recorder.start()
             return True, ""
 
         path = self.config.video_path
@@ -162,7 +204,7 @@ class DRSEngine:
         self._sequential_play = False
         self.reset_delivery()
         self.reset_auto_stump_lock()
-        self._prime_stump_lock_from_video_start()
+        self._prime_stumps_on_open = not self._stump_from_calibration and not self._stump_points_locked
         return True, ""
 
     def _prime_stump_lock_from_video_start(self) -> None:
@@ -177,7 +219,7 @@ class DRSEngine:
         best_score = -1.0
         best_contours: list | None = None
         best_shape: tuple[int, int] | None = None
-        scan_frames = min(60, max(1, self._source.total_frames))
+        scan_frames = min(20, max(1, self._source.total_frames))
 
         for frame_idx in range(scan_frames):
             self._source.seek(frame_idx)
@@ -203,7 +245,20 @@ class DRSEngine:
 
         self._source.seek(0)
 
+    def prime_stumps_if_needed(self) -> None:
+        """Scan early frames for stump corridor once (deferred from open)."""
+        if not self._prime_stumps_on_open or self.config.mode == "live":
+            return
+        self._prime_stump_lock_from_video_start()
+        self._prime_stumps_on_open = False
+        if self._source is not None:
+            self._source.seek(0)
+            self._sequential_play = False
+
     def close(self) -> None:
+        if self._match_recorder:
+            self._match_recorder.stop()
+            self._match_recorder = None
         if self._grabber:
             self._grabber.stop()
             self._grabber = None
@@ -224,6 +279,77 @@ class DRSEngine:
             self.reset_delivery()
         self._last_analysis_frame = frame_pos
 
+    def _collect_trajectory(self, x: int, y: int, frame_w: int, frame_h: int) -> None:
+        if x == 0 and y == 0:
+            return
+        if self.state.impact_locked and len(self.state.trajectory_pitch_points) >= 4:
+            return
+        if not self.event_detector._delivery_in_progress(self.state):
+            return
+
+        if self._pitch_homography is not None:
+            pt = pixel_to_pitch(self._pitch_homography, x, y)
+            if pt is not None and -0.05 <= pt[0] <= 1.05 and -0.05 <= pt[1] <= 1.05:
+                nx = max(0.0, min(1.0, pt[0]))
+                ny = max(0.0, min(1.0, pt[1]))
+            else:
+                nx = max(0.0, min(1.0, x / max(frame_w, 1)))
+                ny = max(0.0, min(1.0, 1.0 - y / max(frame_h, 1)))
+        else:
+            nx = max(0.0, min(1.0, x / max(frame_w, 1)))
+            ny = max(0.0, min(1.0, 1.0 - y / max(frame_h, 1)))
+
+        if self.state.trajectory_pitch_points:
+            last_nx, last_ny = self.state.trajectory_pitch_points[-1]
+            if ny > last_ny + 0.04:
+                return
+            if abs(nx - last_nx) > 0.14 and abs(ny - last_ny) < 0.025:
+                return
+            if (nx - last_nx) ** 2 + (ny - last_ny) ** 2 < 0.00025:
+                return
+
+        self.state.trajectory_points.append((float(x), float(y)))
+        self.state.trajectory_pitch_points.append((nx, ny))
+
+    def trigger_drs_call(self) -> int:
+        """Mark a DRS call; clip is finalized after post-roll seconds."""
+        self._drs_delivery_id += 1
+        self._drs_call_pending = time.time()
+        self.state.delivery_count = self._drs_delivery_id
+        return self._drs_delivery_id
+
+    def finalize_drs_call_if_ready(self) -> Path | None:
+        if self._drs_call_pending is None:
+            return None
+        if time.time() - self._drs_call_pending < self.config.clip_post_roll_seconds:
+            return None
+        call_time = self._drs_call_pending
+        delivery_id = self._drs_delivery_id
+        clip_path = export_drs_call_clip(
+            self.ring_buffer.as_list(),
+            call_time,
+            delivery_id,
+            self._video_fps,
+            pre_seconds=self.config.clip_pre_roll_seconds,
+            post_seconds=self.config.clip_post_roll_seconds,
+            exporter=self._delivery_clip_exporter,
+        )
+        match_path = str(self.match_recording_path) if self.match_recording_path else None
+        if clip_path:
+            self._delivery_clip_exporter.save_call_record(DRSCallRecord(
+                delivery_id=delivery_id,
+                timestamp=call_time,
+                clip_path=str(clip_path),
+                match_recording_path=match_path,
+                trajectory_points=[[p[0], p[1]] for p in self.state.trajectory_pitch_points],
+                pitch_point=list(self.state.pitch_point) if self.state.pitch_point else None,
+                impact_point=list(self.state.impact_point) if self.state.impact_point else None,
+                verdict=self.state.verdict,
+                verdict_reason=self.state.verdict_reason,
+            ))
+        self._drs_call_pending = None
+        return clip_path
+
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
         self.state.update_ball_prev()
         result = self.detector.process(frame)
@@ -233,9 +359,13 @@ class DRSEngine:
         self.state.ball.source = result.ball_source
         self.state.update_ball_diff()
         self.event_detector.process_frame(self.state, result.pitch_contours, result.batsman_contours)
+        self._collect_trajectory(result.ball_x, result.ball_y, frame.shape[1], frame.shape[0])
         self.verdict_engine.evaluate(self.state, self._stump_points)
         self._maybe_log_delivery()
-        return render_frame(frame, result, self.state, self.config, self._stump_points)
+        display = render_frame(frame, result, self.state, self.config, self._stump_points)
+        if self._match_recorder and self.is_live:
+            self._match_recorder.write(frame)
+        return display
 
     def _maybe_log_delivery(self) -> None:
         if not self.state.verdict or self.state.verdict == self._last_verdict:

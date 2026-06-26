@@ -39,9 +39,11 @@ class EventDetector:
     def __init__(self, config: DRSConfig):
         self.config = config
         self._delivery_motion_frames = 0
+        self._delivery_latched = False
 
     def reset(self) -> None:
         self._delivery_motion_frames = 0
+        self._delivery_latched = False
 
     def _ball_speed(self, state: DRSState) -> float:
         b = state.ball
@@ -49,19 +51,23 @@ class EventDetector:
 
     def _delivery_in_progress(self, state: DRSState) -> bool:
         """True once the ball is moving toward the batsman (post-release)."""
+        if self._delivery_latched:
+            return True
+
         b = state.ball
         min_motion = self.config.delivery_motion_min_px
         if b.x == 0 and b.y == 0:
-            self._delivery_motion_frames = 0
             return False
 
         toward_batsman = b.prev_y_diff >= min_motion
         if self._ball_speed(state) >= min_motion and toward_batsman:
             self._delivery_motion_frames += 1
-        else:
-            self._delivery_motion_frames = 0
+        elif self._delivery_motion_frames > 0:
+            self._delivery_motion_frames -= 1
 
-        return self._delivery_motion_frames >= self.config.delivery_motion_frames
+        if self._delivery_motion_frames >= self.config.delivery_motion_frames:
+            self._delivery_latched = True
+        return self._delivery_latched
 
     def process_frame(
         self,

@@ -28,6 +28,7 @@ class VideoSource:
         self.camera_name = camera_name
         self._cap: cv2.VideoCapture | None = None
         self._frame_index = 0
+        self._cached_frame_count: int | None = None
 
     def open(self) -> bool:
         if self.source_type == "usb":
@@ -66,11 +67,51 @@ class VideoSource:
     def frame_index(self) -> int:
         return self._frame_index
 
+    def _count_frames(self) -> int:
+        """Count decodable frames when container metadata is unreliable."""
+        if self._cap is None:
+            return 0
+        pos = self._frame_index
+        count = 0
+        while True:
+            ret, frame = self._cap.read()
+            if not ret or frame is None:
+                break
+            count += 1
+        self.seek(pos)
+        return count
+
+    def _estimate_frame_count(self) -> int:
+        if self._cap is None:
+            return 0
+        reported = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = self.fps
+        if fps > 0:
+            duration_sec = float(self._cap.get(cv2.CAP_PROP_FRAME_COUNT)) / fps
+            if duration_sec <= 0:
+                # Some containers expose length via frame index at end.
+                pos_ms = float(self._cap.get(cv2.CAP_PROP_POS_MSEC))
+                if pos_ms > 0:
+                    duration_sec = pos_ms / 1000.0
+            estimated = int(duration_sec * fps) if duration_sec > 0 else 0
+        else:
+            estimated = 0
+        return max(reported, estimated, 0)
+
     @property
     def total_frames(self) -> int:
         if self._cap is None:
             return 0
-        return int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if self._cached_frame_count is not None:
+            return self._cached_frame_count
+        reported = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        estimated = self._estimate_frame_count()
+        if self.source_type == "file" and (reported <= 1 or estimated > reported):
+            counted = self._count_frames()
+            self._cached_frame_count = max(reported, estimated, counted, 1)
+        else:
+            self._cached_frame_count = max(reported, estimated, 1)
+        return self._cached_frame_count
 
     @property
     def fps(self) -> float:

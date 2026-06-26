@@ -38,6 +38,9 @@ buffer_seconds: 30
 ground_id: "default"
 calibration_file: ""   # e.g. config/calibration/club_ground.json
 
+diagram:
+  enabled: true
+
 live:
   detection_mode: hybrid
   config_file: "config/match.yaml"

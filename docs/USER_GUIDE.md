@@ -173,15 +173,74 @@ python ball_detect.py
 
 ## 5. Live camera (club ground)
 
+### Start a live match (Qt app — recommended)
+
 1. Connect USB camera(s).
-2. Edit `config/match.yaml` — set `source: 0` to your camera index.
-3. Run:
+2. Edit [`config/match.yaml`](config/match.yaml) — set `source: 0` to your camera index.
+3. Run `python main.py` → **File → Start Live Match** (or `python main.py --live`).
+
+**What happens automatically:**
+
+- **Full match recording** to `%LOCALAPPDATA%\DRS\matches\{ground}_{timestamp}.mp4`
+- **60-second ring buffer** for instant DRS clips
+- **Pitch diagram** panel (top-down ball path animation)
+- Status bar shows `REC mm:ss — filename`
+
+### DRS call during live play
+
+When an LBW review is needed:
+
+1. Press **F9** or toolbar **DRS Call** immediately when the ball is bowled.
+2. DRS saves a clip: **12s before** + **8s after** the call (configurable in `match.yaml`).
+3. A dialog offers to **open the clip** for frame-by-frame review (same as recorded video).
+4. Session JSON is saved under `%LOCALAPPDATA%\DRS\sessions\drs_call_*.json`.
+
+### Legacy OpenCV live mode
+
 ```powershell
-python main.py --live
+python main.py --live --legacy-opencv
 ```
-Live mode runs detection continuously (slower than file playback). Use **Space** to pause and review.
+
+### Live config (`config/match.yaml`)
+
+```yaml
+buffer_seconds: 60
+recording:
+  enabled: true
+  segment_minutes: 45
+  width: 1280
+clip:
+  pre_roll_seconds: 12
+  post_roll_seconds: 8
+diagram:
+  enabled: true
+```
 
 For two cameras, set `secondary.enabled: true` and the second camera index.
+
+### Pitch diagram (animated fallback)
+
+When live ball tracking is sparse, the **Pitch diagram** dock shows a top-down Hawk-Eye-style path:
+
+| Points tracked | Display |
+|----------------|---------|
+| 5+ | Solid path + verdict assist |
+| 2–4 | Dashed path + **REVIEW** |
+| 0–1 | Message: use recorded clip |
+
+Calibrate stumps per ground for best diagram accuracy.
+
+### Export diagram from sample / recorded video
+
+Process any video (including `lbw.mp4`) into an animated top-down MP4:
+
+```powershell
+python tools/export_pitch_diagram.py --video lbw.mp4 --output output/lbw_diagram.mp4
+```
+
+In the Qt app: open the video → **Tools → Export Diagram Video...** — saves an MP4 and updates the dock panel.
+
+While playing a recorded video, the **Pitch diagram** dock on the right animates in sync with ball tracking (same as live mode).
 
 ---
 
@@ -208,8 +267,10 @@ DRS **assists** review; it does not make automatic ICC umpire decisions.
 
 | Location | Contents |
 |----------|----------|
-| `sessions/clips/` | MP4 clips saved with **S** |
-| `sessions/` | Session logs (if enabled) |
+| `%LOCALAPPDATA%\DRS\matches\` | Full live match MP4 recordings |
+| `%LOCALAPPDATA%\DRS\clips\` | DRS call clips (auto on F9) |
+| `%LOCALAPPDATA%\DRS\sessions\` | DRS call session JSON |
+| `sessions/clips/` | Manual clips saved with **S** |
 
 ---
 

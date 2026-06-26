@@ -84,3 +84,11 @@ def test_impact_not_before_pitch_line():
     detector.process_frame(state, [], [batsman_cnt])
 
     assert state.impact_point is None
+
+
+def test_delivery_latches_after_motion():
+    cfg = DRSConfig(delivery_motion_min_px=4, delivery_motion_frames=2)
+    detector = EventDetector(cfg)
+    assert not detector._delivery_in_progress(_moving_ball_state(300, 295))
+    assert detector._delivery_in_progress(_moving_ball_state(305, 300))
+    assert detector._delivery_in_progress(DRSState())

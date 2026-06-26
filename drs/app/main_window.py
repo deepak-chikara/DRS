@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFileDialog,
+    QDockWidget,
     QMainWindow,
     QMessageBox,
     QStatusBar,
@@ -19,14 +20,15 @@ from PySide6.QtWidgets import (
 
 from drs import __app_name__, __version__
 from drs.app.about_dialog import AboutDialog
+from drs.app.pitch_diagram_widget import PitchDiagramWidget
 from drs.app.playback_worker import PlaybackWorker
 from drs.app.settings_dialog import SettingsDialog
 from drs.app.setup_wizard import SetupWizard
 from drs.app.timeline_widget import TimelineWidget
 from drs.app.video_widget import VideoWidget
-from drs.config import DRSConfig, save_config
+from drs.config import DRSConfig, load_config, save_config
 from drs.engine import DRSEngine
-from drs.paths import user_calibration_dir, user_config_path
+from drs.paths import app_root, user_calibration_dir, user_config_path
 from drs.ui.calibrate_stumps import calibrate_stumps_on_frame, read_calibration_frame, save_pitch_calibration
 from drs.ui.playback import ViewMode
 
@@ -51,6 +53,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._video, stretch=1)
         layout.addWidget(self._timeline)
 
+        self._diagram = PitchDiagramWidget()
+        dock = QDockWidget("Pitch diagram", self)
+        dock.setWidget(self._diagram)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+
         self._status = QStatusBar()
         self.setStatusBar(self._status)
         self._status.showMessage(f"{__app_name__} v{__version__} — Open a video to begin")
@@ -65,6 +72,9 @@ class MainWindow(QMainWindow):
         open_act = QAction("&Open Video...", self)
         open_act.triggered.connect(self._open_video)
         file_menu.addAction(open_act)
+        live_act = QAction("Start &Live Match...", self)
+        live_act.triggered.connect(self._start_live)
+        file_menu.addAction(live_act)
         save_act = QAction("&Save Clip", self)
         save_act.triggered.connect(self._save_clip)
         file_menu.addAction(save_act)
@@ -74,6 +84,9 @@ class MainWindow(QMainWindow):
         file_menu.addAction(exit_act)
 
         tools_menu = self.menuBar().addMenu("&Tools")
+        export_act = QAction("Export &Diagram Video...", self)
+        export_act.triggered.connect(self._export_diagram)
+        tools_menu.addAction(export_act)
         cal_act = QAction("&Calibrate Stumps...", self)
         cal_act.triggered.connect(self._calibrate)
         tools_menu.addAction(cal_act)
@@ -94,6 +107,8 @@ class MainWindow(QMainWindow):
         self.addToolBar(tb)
         for label, slot in (
             ("Open", self._open_video),
+            ("Live", self._start_live),
+            ("DRS Call", self._drs_call),
             ("Calibrate", self._calibrate),
             ("Save Clip", self._save_clip),
         ):
@@ -109,6 +124,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("D"), self, lambda: self._step(5, back=False))
         QShortcut(QKeySequence("R"), self, self._restart)
         QShortcut(QKeySequence("S"), self, self._save_clip)
+        QShortcut(QKeySequence("F9"), self, self._drs_call)
 
     def _bind_timeline(self) -> None:
         self._timeline.play_clicked.connect(self._play)
@@ -130,20 +146,63 @@ class MainWindow(QMainWindow):
         self._worker.frame_ready.connect(self._video.show_frame)
         self._worker.position_changed.connect(self._on_position)
         self._worker.verdict_changed.connect(self._on_verdict)
-        self._worker.playback_ended.connect(lambda: self._status.showMessage("End of video"))
+        self._worker.playback_ended.connect(self._on_playback_ended)
         self._worker.error.connect(self._on_error)
         self._worker.fps_updated.connect(self._on_fps)
-        self._timeline.set_total(self._engine.total_frames or 1)
+        self._worker.recording_status.connect(self._on_recording_status)
+        self._worker.trajectory_updated.connect(self._on_trajectory)
+        self._worker.drs_clip_ready.connect(self._on_drs_clip_ready)
         self._worker.start()
+
+    def _on_playback_ended(self) -> None:
+        self._status.showMessage("End of video — paused at last frame")
+        if not self._worker or not self.config.diagram_enabled:
+            return
+        st = self._worker.engine.state
+        if not st.trajectory_pitch_points:
+            return
+        self._diagram.set_trajectory(
+            list(st.trajectory_pitch_points),
+            pitch_bounce=self._worker._plane_point(st.pitch_point),
+            impact=self._worker._plane_point(st.impact_point),
+            pixel_points=[(p[0], p[1]) for p in st.trajectory_points],
+            frame_h=self._worker._last_frame_h,
+            animate=True,
+        )
 
     def _open_video(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Open video", "", "Video (*.mp4 *.avi *.mov)")
         if not path:
             return
+        self._load_video_path(path)
+
+    def _load_video_path(self, path: str) -> None:
+        self.config.mode = "file"
         self.config.video_path = path
         save_config(self.config, user_config_path())
         self._start_worker()
         self._status.showMessage(f"Loaded: {Path(path).name}")
+
+    def _start_live(self) -> None:
+        match_cfg = app_root() / "config" / "match.yaml"
+        if match_cfg.is_file():
+            live = load_config(match_cfg)
+            self.config.mode = "live"
+            self.config.cameras = live.cameras
+            self.config.detection_mode = live.detection_mode
+            self.config.ring_buffer_seconds = live.ring_buffer_seconds
+            self.config.recording_enabled = live.recording_enabled
+            self.config.recording_output_dir = live.recording_output_dir
+            self.config.recording_segment_minutes = live.recording_segment_minutes
+            self.config.recording_width = live.recording_width
+            self.config.clip_pre_roll_seconds = live.clip_pre_roll_seconds
+            self.config.clip_post_roll_seconds = live.clip_post_roll_seconds
+            self.config.diagram_enabled = live.diagram_enabled
+        else:
+            self.config.mode = "live"
+        save_config(self.config, user_config_path())
+        self._start_worker()
+        self._status.showMessage("Live match — recording started (see status bar)")
 
     def _play(self) -> None:
         if self._worker:
@@ -174,6 +233,109 @@ class MainWindow(QMainWindow):
     def _seek(self, pos: int) -> None:
         if self._worker:
             self._worker.seek(pos)
+
+    def _drs_call(self) -> None:
+        if not self._worker or not self._worker.engine.is_live:
+            QMessageBox.information(self, "DRS Call", "Start a live match first (File → Start Live Match).")
+            return
+        self._worker.drs_call()
+        self._status.showMessage(
+            f"DRS call — saving clip (wait {self.config.clip_post_roll_seconds:.0f}s post-roll)..."
+        )
+
+    def _on_drs_clip_ready(self, clip_path: str) -> None:
+        self._status.showMessage(f"DRS clip saved: {clip_path}")
+        reply = QMessageBox.question(
+            self,
+            "DRS clip ready",
+            f"Clip saved:\n{clip_path}\n\nOpen for frame-by-frame review?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._load_video_path(clip_path)
+
+    def _on_recording_status(self, elapsed: float, path: str) -> None:
+        mins = int(elapsed // 60)
+        secs = int(elapsed % 60)
+        name = Path(path).name if path else "starting..."
+        self._status.showMessage(f"REC {mins:02d}:{secs:02d} — {name}")
+
+    def _on_trajectory(self, payload) -> None:
+        if not self.config.diagram_enabled:
+            return
+        if isinstance(payload, dict):
+            points = payload.get("points", [])
+            pitch_pt = payload.get("pitch_bounce")
+            impact_pt = payload.get("impact")
+            pixel_pts = payload.get("pixel_points")
+            frame_h = payload.get("frame_h", 720)
+            animate = payload.get("animate", False)
+            live_ball = payload.get("live_ball")
+            live_pixel = payload.get("live_pixel")
+        else:
+            points = list(payload)
+            pitch_pt = None
+            impact_pt = None
+            pixel_pts = None
+            frame_h = 720
+            animate = False
+            live_ball = None
+            live_pixel = None
+        if self._worker and not pitch_pt and self._worker.engine.state.pitch_point:
+            pitch_pt = self._worker.engine.state.trajectory_pitch_points[-1] if self._worker.engine.state.trajectory_pitch_points else None
+        self._diagram.set_trajectory(
+            points,
+            pitch_bounce=pitch_pt,
+            impact=impact_pt,
+            pixel_points=pixel_pts,
+            frame_h=frame_h,
+            animate=animate,
+            live_ball=live_ball,
+            live_pixel=live_pixel,
+        )
+
+    def _export_diagram(self) -> None:
+        video = self.config.video_path
+        if not Path(video).is_file():
+            QMessageBox.warning(self, "Export diagram", "Open a video first.")
+            return
+        out, _ = QFileDialog.getSaveFileName(
+            self, "Save diagram video", f"{Path(video).stem}_diagram.mp4", "Video (*.mp4)",
+        )
+        if not out:
+            return
+        try:
+            from drs.analysis.video_trajectory import extract_trajectories_from_video
+            from drs.ui.pitch_diagram import export_combined_diagram_video
+
+            deliveries = extract_trajectories_from_video(video, self.config)
+            if not deliveries:
+                QMessageBox.warning(self, "Export diagram", "No ball trajectory detected in this video.")
+                return
+            best = max(deliveries, key=lambda d: len(d.pitch_points))
+            export_combined_diagram_video(
+                best.pitch_points,
+                best.pixel_points,
+                out,
+                fps=24.0,
+                frame_h=best.frame_h,
+                pitch_bounce=best.pitch_bounce,
+                impact=best.impact,
+            )
+            self._diagram.set_trajectory(
+                best.pitch_points,
+                pitch_bounce=best.pitch_bounce,
+                impact=best.impact,
+                pixel_points=best.pixel_points,
+                frame_h=best.frame_h,
+                animate=True,
+            )
+            QMessageBox.information(
+                self, "Diagram exported",
+                f"Saved: {out}\n\n{best.pitch_points.__len__()} tracking points from delivery #{best.delivery_index}.",
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Export diagram", str(exc))
 
     def _save_clip(self) -> None:
         if not self._worker:

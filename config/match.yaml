@@ -18,4 +18,16 @@ detection:
 live:
   detection_mode: hybrid
 
-buffer_seconds: 30
+buffer_seconds: 60
+
+recording:
+  enabled: true
+  segment_minutes: 45
+  width: 1280
+
+clip:
+  pre_roll_seconds: 12
+  post_roll_seconds: 8
+
+diagram:
+  enabled: true
