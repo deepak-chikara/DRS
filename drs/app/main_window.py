@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
 
 from drs import __app_name__, __version__
 from drs.app.about_dialog import AboutDialog
+from drs.app.advisory_panel import AdvisoryPanel
+from drs.app.advisory_worker import AdvisoryWorker
 from drs.app.pitch_diagram_widget import PitchDiagramWidget
 from drs.app.playback_worker import PlaybackWorker
 from drs.app.settings_dialog import SettingsDialog
@@ -29,6 +31,8 @@ from drs.app.video_widget import VideoWidget
 from drs.config import DRSConfig, load_config, save_config
 from drs.engine import DRSEngine
 from drs.paths import app_root, user_calibration_dir, user_config_path
+from drs.services.advisory.factory import create_advisory_service
+from drs.services.advisory.models import AdvisoryResult, DeliveryEvidence
 from drs.ui.calibrate_stumps import calibrate_stumps_on_frame, read_calibration_frame, save_pitch_calibration
 from drs.ui.playback import ViewMode
 
@@ -57,6 +61,20 @@ class MainWindow(QMainWindow):
         dock = QDockWidget("Pitch diagram", self)
         dock.setWidget(self._diagram)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+
+        self._advisory_service = create_advisory_service(config)
+        self._advisory_worker = AdvisoryWorker(self._advisory_service, self)
+        self._advisory_panel = AdvisoryPanel()
+        self._advisory_dock = QDockWidget("AI Review", self)
+        self._advisory_dock.setWidget(self._advisory_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._advisory_dock)
+        if not config.ai_enabled:
+            self._advisory_panel.set_enabled(False)
+        else:
+            self._advisory_worker.check_provider()
+        self._advisory_worker.advisory_ready.connect(self._on_advisory_ready)
+        self._advisory_worker.advisory_failed.connect(self._on_advisory_failed)
+        self._advisory_worker.provider_status.connect(self._on_advisory_status)
 
         self._status = QStatusBar()
         self.setStatusBar(self._status)
@@ -87,6 +105,12 @@ class MainWindow(QMainWindow):
         export_act = QAction("Export &Diagram Video...", self)
         export_act.triggered.connect(self._export_diagram)
         tools_menu.addAction(export_act)
+        ai_act = QAction("Analyze Delivery with &AI", self)
+        ai_act.triggered.connect(self._analyze_with_ai)
+        tools_menu.addAction(ai_act)
+        ai_settings_act = QAction("AI &Settings (Ollama)...", self)
+        ai_settings_act.triggered.connect(self._settings)
+        tools_menu.addAction(ai_settings_act)
         cal_act = QAction("&Calibrate Stumps...", self)
         cal_act.triggered.connect(self._calibrate)
         tools_menu.addAction(cal_act)
@@ -152,7 +176,27 @@ class MainWindow(QMainWindow):
         self._worker.recording_status.connect(self._on_recording_status)
         self._worker.trajectory_updated.connect(self._on_trajectory)
         self._worker.drs_clip_ready.connect(self._on_drs_clip_ready)
+        self._worker.delivery_evidence_ready.connect(self._on_delivery_evidence)
+        self._refresh_advisory_service()
         self._worker.start()
+
+    def _refresh_advisory_service(self) -> None:
+        self._advisory_service = create_advisory_service(self.config)
+        self._advisory_worker.set_service(self._advisory_service)
+        if self.config.ai_enabled:
+            self._advisory_panel.set_enabled(True)
+            self._advisory_dock.show()
+            self._advisory_worker.check_provider()
+        else:
+            self._advisory_panel.set_enabled(False)
+            self._advisory_panel.set_provider_status(False, "Disabled — enable in Settings")
+
+    def _on_advisory_status(self, available: bool, label: str) -> None:
+        self._advisory_panel.set_provider_status(available, label)
+        if self.config.ai_enabled and not available:
+            self._status.showMessage(
+                "AI enabled but Ollama offline — run: ollama serve && ollama pull llama3.2"
+            )
 
     def _on_playback_ended(self) -> None:
         self._status.showMessage("End of video — paused at last frame")
@@ -167,6 +211,7 @@ class MainWindow(QMainWindow):
             impact=self._worker._plane_point(st.impact_point),
             pixel_points=[(p[0], p[1]) for p in st.trajectory_points],
             frame_h=self._worker._last_frame_h,
+            stump_points=self._worker.engine.stump_points,
             animate=True,
         )
 
@@ -245,6 +290,8 @@ class MainWindow(QMainWindow):
 
     def _on_drs_clip_ready(self, clip_path: str) -> None:
         self._status.showMessage(f"DRS clip saved: {clip_path}")
+        if self.config.ai_enabled and self._worker:
+            self._worker.request_advisory(clip_path=clip_path)
         reply = QMessageBox.question(
             self,
             "DRS clip ready",
@@ -269,6 +316,7 @@ class MainWindow(QMainWindow):
             impact_pt = payload.get("impact")
             pixel_pts = payload.get("pixel_points")
             frame_h = payload.get("frame_h", 720)
+            stump_points = payload.get("stump_points")
             animate = payload.get("animate", False)
             live_ball = payload.get("live_ball")
             live_pixel = payload.get("live_pixel")
@@ -278,6 +326,7 @@ class MainWindow(QMainWindow):
             impact_pt = None
             pixel_pts = None
             frame_h = 720
+            stump_points = None
             animate = False
             live_ball = None
             live_pixel = None
@@ -289,6 +338,7 @@ class MainWindow(QMainWindow):
             impact=impact_pt,
             pixel_points=pixel_pts,
             frame_h=frame_h,
+            stump_points=stump_points,
             animate=animate,
             live_ball=live_ball,
             live_pixel=live_pixel,
@@ -321,6 +371,7 @@ class MainWindow(QMainWindow):
                 frame_h=best.frame_h,
                 pitch_bounce=best.pitch_bounce,
                 impact=best.impact,
+                stump_points=best.stump_points,
             )
             self._diagram.set_trajectory(
                 best.pitch_points,
@@ -328,6 +379,7 @@ class MainWindow(QMainWindow):
                 impact=best.impact,
                 pixel_points=best.pixel_points,
                 frame_h=best.frame_h,
+                stump_points=best.stump_points,
                 animate=True,
             )
             QMessageBox.information(
@@ -375,7 +427,13 @@ class MainWindow(QMainWindow):
     def _settings(self) -> None:
         dlg = SettingsDialog(self.config, self)
         if dlg.exec():
-            self._status.showMessage("Settings saved — reopen video to apply fully")
+            self._refresh_advisory_service()
+            msg = "Settings saved."
+            if self.config.ai_enabled:
+                msg += " AI Review enabled — use Tools → Analyze Delivery with AI after a pad/LBW moment."
+            else:
+                msg += " Reopen video to apply detection changes fully."
+            self._status.showMessage(msg)
 
     def _about(self) -> None:
         AboutDialog(self).exec()
@@ -385,8 +443,80 @@ class MainWindow(QMainWindow):
         self._timeline.set_total(total)
 
     def _on_verdict(self, verdict: str, reason: str) -> None:
-        self._status.showMessage(f"Verdict: {verdict} — {reason}")
-        logger.info("UI verdict: %s", verdict)
+        conf_pct = 0
+        ai_note = ""
+        if self._worker:
+            conf_pct = int(self._worker.engine.state.confidence_overall * 100)
+            if self._worker.engine.state.ai_verdict:
+                ai_note = f" — AI: {self._worker.engine.state.ai_verdict}"
+        self._status.showMessage(f"Verdict: {verdict} ({conf_pct}% confidence){ai_note} — {reason}")
+        logger.info("UI verdict: %s (%d%%)", verdict, conf_pct)
+
+    def _on_delivery_evidence(self, payload) -> None:
+        if not self.config.ai_enabled:
+            return
+        if isinstance(payload, dict):
+            evidence = payload.get("evidence")
+            force = bool(payload.get("force", False))
+        else:
+            evidence = payload
+            force = False
+        if evidence is None:
+            return
+        self._advisory_panel.show_evidence(evidence)
+        self._advisory_panel.set_analyzing()
+        self._advisory_worker.analyze(evidence, force=force)
+
+    def _on_advisory_ready(self, result: AdvisoryResult) -> None:
+        self._advisory_panel.show_result(result)
+        if self._worker:
+            self._worker.engine.apply_advisory_result(result)
+        ai = result.recommended_verdict
+        self._status.showMessage(
+            f"AI review: {ai} ({int(result.confidence * 100)}%) — {result.summary}"
+        )
+
+    def _on_advisory_failed(self, message: str) -> None:
+        self._advisory_panel.show_error(message)
+
+    def _analyze_with_ai(self) -> None:
+        if not self.config.ai_enabled:
+            reply = QMessageBox.question(
+                self,
+                "AI Advisory",
+                "AI Review is not enabled.\n\nOpen Settings now to enable Ollama advisory?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._settings()
+            return
+        if not self._worker:
+            QMessageBox.warning(self, "AI Advisory", "Open a video or start live match first.")
+            return
+        if self._advisory_service.provider_name == "none":
+            QMessageBox.warning(self, "AI Advisory", "AI service not configured.")
+            return
+        if not self._advisory_service.is_available():
+            QMessageBox.warning(
+                self,
+                "Ollama offline",
+                "Cannot reach Ollama at http://127.0.0.1:11434\n\n"
+                "1. Install Ollama from https://ollama.com\n"
+                "2. In a terminal: ollama pull llama3.2\n"
+                "3. Ensure Ollama is running (system tray)\n"
+                "4. Tools → Settings → Test Ollama",
+            )
+            return
+        ok = self._worker.request_advisory()
+        if not ok:
+            QMessageBox.information(
+                self,
+                "AI Advisory",
+                "Could not build delivery evidence. Play or scrub to the LBW/pad moment "
+                "(when OUT/NOT OUT/REVIEW appears), then try again.",
+            )
+            return
+        self._status.showMessage("AI analysis requested — see AI Review panel…")
 
     def _on_error(self, msg: str) -> None:
         logger.error(msg)
@@ -398,6 +528,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._stop_worker()
+        if self._advisory_worker.isRunning():
+            self._advisory_worker.wait(3000)
         event.accept()
 
     @staticmethod

@@ -12,7 +12,7 @@ from drs.config import DRSConfig, load_config
 from drs.decision.events import EventDetector
 from drs.detectors.hybrid import HybridDetector
 from drs.engine import DRSEngine
-from drs.fusion.calibration import pixel_to_pitch
+from drs.fusion.calibration import StumpPoints, pixel_to_pitch_normalized
 from drs.state import DRSState
 
 
@@ -26,6 +26,7 @@ class DeliveryTrajectory:
     impact: tuple[float, float] | None = None
     verdict: str = ""
     verdict_reason: str = ""
+    stump_points: StumpPoints | None = None
 
 
 def _to_pitch_point(
@@ -34,14 +35,15 @@ def _to_pitch_point(
     frame_w: int,
     frame_h: int,
     homography: np.ndarray | None,
+    stump_points: StumpPoints | None,
 ) -> tuple[float, float]:
-    if homography is not None:
-        pt = pixel_to_pitch(homography, x, y)
-        if pt is not None and -0.05 <= pt[0] <= 1.05 and -0.05 <= pt[1] <= 1.05:
-            return max(0.0, min(1.0, pt[0])), max(0.0, min(1.0, pt[1]))
-    nx = max(0.0, min(1.0, x / max(frame_w, 1)))
-    ny = max(0.0, min(1.0, 1.0 - y / max(frame_h, 1)))
-    return nx, ny
+    return pixel_to_pitch_normalized(
+        x, y,
+        frame_w=frame_w,
+        frame_h=frame_h,
+        homography=homography,
+        stump_points=stump_points,
+    )
 
 
 def extract_trajectories_from_video(
@@ -110,10 +112,15 @@ def extract_trajectories_from_video(
                     pitch_points=current_pitch.copy(),
                     pixel_points=current_pixel.copy(),
                     frame_h=last_fh,
-                    pitch_bounce=_bounce_from_state(state, frame.shape[1], frame.shape[0], homography),
-                    impact=_impact_from_state(state, frame.shape[1], frame.shape[0], homography),
+                    pitch_bounce=_bounce_from_state(
+                        state, last_fw, last_fh, homography, engine.stump_points,
+                    ),
+                    impact=_impact_from_state(
+                        state, last_fw, last_fh, homography, engine.stump_points,
+                    ),
                     verdict=state.verdict,
                     verdict_reason=state.verdict_reason,
+                    stump_points=engine.stump_points,
                 ))
             state.reset_delivery()
             events.reset()
@@ -126,6 +133,7 @@ def extract_trajectories_from_video(
 
         state.update_ball_prev()
         result = detector.process(frame)
+        engine._try_lock_stumps_from_pitch(result.pitch_contours, fh, fw)
         state.ball.x = result.ball_x
         state.ball.y = result.ball_y
         state.update_ball_diff()
@@ -133,7 +141,9 @@ def extract_trajectories_from_video(
 
         if result.ball_x != 0 or result.ball_y != 0:
             if events._delivery_in_progress(state):
-                pt = _to_pitch_point(result.ball_x, result.ball_y, fw, fh, homography)
+                pt = _to_pitch_point(
+                    result.ball_x, result.ball_y, fw, fh, homography, engine.stump_points,
+                )
                 if not current_pitch or current_pitch[-1] != pt:
                     current_pitch.append(pt)
                     current_pixel.append((float(result.ball_x), float(result.ball_y)))
@@ -146,17 +156,19 @@ def extract_trajectories_from_video(
             pitch_points=current_pitch,
             pixel_points=current_pixel,
             frame_h=last_fh,
-            pitch_bounce=_bounce_from_state(state, last_fw, last_fh, homography),
-            impact=_impact_from_state(state, last_fw, last_fh, homography),
+            pitch_bounce=_bounce_from_state(state, last_fw, last_fh, homography, engine.stump_points),
+            impact=_impact_from_state(state, last_fw, last_fh, homography, engine.stump_points),
             verdict=state.verdict,
             verdict_reason=state.verdict_reason,
+            stump_points=engine.stump_points,
         ))
 
     cap.release()
+    saved_stumps = engine.stump_points
     engine.close()
 
     if not deliveries and total > 0:
-        deliveries = _fallback_single_delivery(path, cfg, homography)
+        deliveries = _fallback_single_delivery(path, cfg, homography, saved_stumps)
 
     return deliveries
 
@@ -166,11 +178,12 @@ def _bounce_from_state(
     fw: int,
     fh: int,
     homography: np.ndarray | None,
+    stump_points: StumpPoints | None,
 ) -> tuple[float, float] | None:
     if state.pitch_point is None:
         return None
     x, y = state.pitch_point
-    return _to_pitch_point(x, y, fw, fh, homography)
+    return _to_pitch_point(x, y, fw, fh, homography, stump_points)
 
 
 def _impact_from_state(
@@ -178,17 +191,19 @@ def _impact_from_state(
     fw: int,
     fh: int,
     homography: np.ndarray | None,
+    stump_points: StumpPoints | None,
 ) -> tuple[float, float] | None:
     if state.impact_point is None:
         return None
     x, y = state.impact_point
-    return _to_pitch_point(x, y, fw, fh, homography)
+    return _to_pitch_point(x, y, fw, fh, homography, stump_points)
 
 
 def _fallback_single_delivery(
     path: Path,
     cfg: DRSConfig,
     homography: np.ndarray | None,
+    stump_points: StumpPoints | None,
 ) -> list[DeliveryTrajectory]:
     """Use full-video ball detections when delivery boundaries are unclear."""
     cap = cv2.VideoCapture(str(path))
@@ -204,16 +219,28 @@ def _fallback_single_delivery(
         pitch_cache_frames=1,
     )
     pitch_pts: list[tuple[float, float]] = []
+    pixel_pts: list[tuple[float, float]] = []
+    frame_h = 720
     while True:
         ret, frame = cap.read()
         if not ret or frame is None:
             break
+        frame_h = frame.shape[0]
         r = detector.process(frame)
         if r.ball_x != 0 or r.ball_y != 0:
-            pt = _to_pitch_point(r.ball_x, r.ball_y, frame.shape[1], frame.shape[0], homography)
+            pt = _to_pitch_point(
+                r.ball_x, r.ball_y, frame.shape[1], frame.shape[0], homography, stump_points,
+            )
             if not pitch_pts or pitch_pts[-1] != pt:
                 pitch_pts.append(pt)
+                pixel_pts.append((float(r.ball_x), float(r.ball_y)))
     cap.release()
     if not pitch_pts:
         return []
-    return [DeliveryTrajectory(delivery_index=0, pitch_points=pitch_pts, pixel_points=[])]
+    return [DeliveryTrajectory(
+        delivery_index=0,
+        pitch_points=pitch_pts,
+        pixel_points=pixel_pts,
+        frame_h=frame_h,
+        stump_points=stump_points,
+    )]

@@ -41,6 +41,19 @@ calibration_file: ""   # e.g. config/calibration/club_ground.json
 diagram:
   enabled: true
 
+ai:
+  enabled: false
+  provider: ollama
+  min_confidence_auto: 0.72
+  resolve_review: true
+  ollama:
+    base_url: "http://127.0.0.1:11434"
+    model: "llama3.2"
+    timeout_seconds: 25
+    temperature: 0.1
+  live_enabled: true
+  live_interval_seconds: 2.0
+
 live:
   detection_mode: hybrid
   config_file: "config/match.yaml"

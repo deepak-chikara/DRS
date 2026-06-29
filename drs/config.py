@@ -55,6 +55,16 @@ class DRSConfig:
     clip_pre_roll_seconds: float = 12.0
     clip_post_roll_seconds: float = 8.0
     diagram_enabled: bool = True
+    ai_enabled: bool = False
+    ai_provider: str = "ollama"
+    ai_min_confidence_auto: float = 0.72
+    ai_resolve_review: bool = True
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_model: str = "llama3.2"
+    ollama_timeout_seconds: float = 25.0
+    ollama_temperature: float = 0.1
+    ai_live_enabled: bool = True
+    ai_live_interval_seconds: float = 2.0
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -147,6 +157,16 @@ def load_config(path: str | Path) -> DRSConfig:
         clip_pre_roll_seconds=float(data.get("clip", {}).get("pre_roll_seconds", 12)),
         clip_post_roll_seconds=float(data.get("clip", {}).get("post_roll_seconds", 8)),
         diagram_enabled=data.get("diagram", {}).get("enabled", True),
+        ai_enabled=data.get("ai", {}).get("enabled", False),
+        ai_provider=data.get("ai", {}).get("provider", "ollama"),
+        ai_min_confidence_auto=float(data.get("ai", {}).get("min_confidence_auto", 0.72)),
+        ai_resolve_review=data.get("ai", {}).get("resolve_review", True),
+        ollama_base_url=data.get("ai", {}).get("ollama", {}).get("base_url", "http://127.0.0.1:11434"),
+        ollama_model=data.get("ai", {}).get("ollama", {}).get("model", "llama3.2"),
+        ollama_timeout_seconds=float(data.get("ai", {}).get("ollama", {}).get("timeout_seconds", 25)),
+        ollama_temperature=float(data.get("ai", {}).get("ollama", {}).get("temperature", 0.1)),
+        ai_live_enabled=data.get("ai", {}).get("live_enabled", True),
+        ai_live_interval_seconds=float(data.get("ai", {}).get("live_interval_seconds", 2.0)),
         raw=data,
     )
 
@@ -190,6 +210,22 @@ def save_config(config: DRSConfig, path: str | Path) -> None:
         "post_roll_seconds": config.clip_post_roll_seconds,
     })
     data.setdefault("diagram", {})["enabled"] = config.diagram_enabled
+    data.setdefault("ai", {})
+    data["ai"].update({
+        "enabled": config.ai_enabled,
+        "provider": config.ai_provider,
+        "min_confidence_auto": config.ai_min_confidence_auto,
+        "resolve_review": config.ai_resolve_review,
+    })
+    data["ai"].setdefault("ollama", {})
+    data["ai"]["ollama"].update({
+        "base_url": config.ollama_base_url,
+        "model": config.ollama_model,
+        "timeout_seconds": config.ollama_timeout_seconds,
+        "temperature": config.ollama_temperature,
+    })
+    data["ai"]["live_enabled"] = config.ai_live_enabled
+    data["ai"]["live_interval_seconds"] = config.ai_live_interval_seconds
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)

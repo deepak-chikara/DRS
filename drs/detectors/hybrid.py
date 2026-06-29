@@ -127,7 +127,7 @@ class HybridDetector:
         elif self.detection_mode == "color" and color_x != 0:
             ball_x, ball_y = color_x, color_y
             ball_source = "color"
-            ball_conf = 0.5
+            ball_conf = 0.72
         elif self.detection_mode == "hybrid":
             if yolo_ball and yolo_ball.confidence >= (self.yolo.ball_conf if self.yolo else 1.0):
                 ball_x, ball_y = yolo_ball.x, yolo_ball.y
@@ -136,13 +136,13 @@ class HybridDetector:
             elif color_x != 0:
                 ball_x, ball_y = color_x, color_y
                 ball_source = "color"
-                ball_conf = 0.5
+                ball_conf = 0.72
             else:
                 pred = self.tracker.predict()
                 if pred:
                     ball_x, ball_y = pred
                     ball_source = "tracker"
-                    ball_conf = 0.3
+                    ball_conf = 0.45
 
         if ball_x != 0 or ball_y != 0:
             self.tracker.update(ball_x, ball_y)
@@ -151,7 +151,7 @@ class HybridDetector:
             if pred and self.detection_mode == "hybrid":
                 ball_x, ball_y = pred
                 ball_source = "tracker"
-                ball_conf = 0.2
+                ball_conf = 0.38
 
         if yolo_person and yolo_person.confidence >= 0.4:
             h = yolo_person.height

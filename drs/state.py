@@ -35,6 +35,10 @@ class DRSState:
     trajectory_pitch_points: list[tuple[float, float]] = field(default_factory=list)
     verdict: str = ""
     verdict_reason: str = ""
+    confidence_overall: float = 0.0
+    ai_verdict: str = ""
+    ai_summary: str = ""
+    ai_pending: bool = False
 
     def update_ball_prev(self) -> None:
         b = self.ball
@@ -59,5 +63,9 @@ class DRSState:
         self.bat_leg = 10000
         self.verdict = ""
         self.verdict_reason = ""
+        self.confidence_overall = 0.0
+        self.ai_verdict = ""
+        self.ai_summary = ""
+        self.ai_pending = False
         self.trajectory_points.clear()
         self.trajectory_pitch_points.clear()

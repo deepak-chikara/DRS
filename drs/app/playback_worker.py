@@ -20,6 +20,7 @@ class PlaybackWorker(QThread):
     recording_status = Signal(float, str)
     trajectory_updated = Signal(object)
     drs_clip_ready = Signal(str)
+    delivery_evidence_ready = Signal(object)
 
     def __init__(self, engine: DRSEngine, parent=None):
         super().__init__(parent)
@@ -35,6 +36,9 @@ class PlaybackWorker(QThread):
         self._last_trajectory_len = 0
         self._last_processed_pos = -1
         self._frames_seen = 0
+        self._last_ai_emit_time = 0.0
+        self._last_ai_traj_count = 0
+        self._ai_bootstrapped = False
 
     def stop(self) -> None:
         self._running = False
@@ -219,6 +223,9 @@ class PlaybackWorker(QThread):
                     live=pb.mode == ViewMode.PLAYING and not self._at_eof,
                 )
 
+            if self.engine.config.ai_enabled:
+                self._maybe_emit_live_advisory()
+
             if pb.mode == ViewMode.PLAYING:
                 pos = self.playback.frame_pos
                 self.playback.frame_pos += 1
@@ -229,6 +236,7 @@ class PlaybackWorker(QThread):
             if self.engine.state.verdict and self.engine.state.verdict != last_verdict:
                 last_verdict = self.engine.state.verdict
                 self.verdict_changed.emit(self.engine.state.verdict, self.engine.state.verdict_reason)
+                self._emit_delivery_evidence()
 
             elapsed_proc = time.perf_counter() - t0
             if elapsed_proc > 0:
@@ -259,6 +267,7 @@ class PlaybackWorker(QThread):
             "points": points,
             "pixel_points": [(p[0], p[1]) for p in st.trajectory_points],
             "frame_h": self._last_frame_h,
+            "stump_points": self.engine.stump_points,
             "pitch_bounce": self._plane_point(st.pitch_point),
             "impact": self._plane_point(st.impact_point),
             "verdict": st.verdict,
@@ -277,24 +286,83 @@ class PlaybackWorker(QThread):
         return self._pixel_to_pitch(st.ball.x, st.ball.y, self._last_frame_w, self._last_frame_h)
 
     def _pixel_to_pitch(self, x: int, y: int, frame_w: int, frame_h: int) -> tuple[float, float]:
-        homography = self.engine._pitch_homography
-        if homography is not None:
-            from drs.fusion.calibration import pixel_to_pitch
-            pt = pixel_to_pitch(homography, x, y)
-            if pt is not None and -0.05 <= pt[0] <= 1.05 and -0.05 <= pt[1] <= 1.05:
-                return max(0.0, min(1.0, pt[0])), max(0.0, min(1.0, pt[1]))
-        nx = max(0.0, min(1.0, x / max(frame_w, 1)))
-        ny = max(0.0, min(1.0, 1.0 - y / max(frame_h, 1)))
-        return nx, ny
+        from drs.fusion.calibration import pixel_to_pitch_normalized
+
+        return pixel_to_pitch_normalized(
+            x, y,
+            frame_w=frame_w,
+            frame_h=frame_h,
+            homography=self.engine._pitch_homography,
+            stump_points=self.engine.stump_points,
+        )
 
     def _plane_point(self, pt: tuple[int, int] | None) -> tuple[float, float] | None:
         if pt is None:
             return None
-        homography = self.engine._pitch_homography
-        if homography is not None:
-            from drs.fusion.calibration import pixel_to_pitch
-            converted = pixel_to_pitch(homography, pt[0], pt[1])
-            if converted is not None:
-                return converted
-        x, y = pt
-        return max(0.0, min(1.0, x / 1280.0)), max(0.0, min(1.0, 1.0 - y / 720.0))
+        return self._pixel_to_pitch(pt[0], pt[1], self._last_frame_w, self._last_frame_h)
+
+    def _emit_delivery_evidence(
+        self,
+        clip_path: str | None = None,
+        *,
+        manual: bool = False,
+        live: bool = False,
+    ) -> bool:
+        if not self.engine.config.ai_enabled:
+            return False
+        from drs.services.advisory.evidence import build_delivery_evidence
+
+        st = self.engine.state
+        evidence = build_delivery_evidence(
+            st,
+            mode=self.engine.config.mode,
+            frame_pos=self.playback.frame_pos,
+            delivery_id=st.delivery_count or 1,
+            stump_points=self.engine.stump_points,
+            clip_path=clip_path,
+            manual=manual,
+            live=live,
+        )
+        if evidence is None:
+            return False
+        st.ai_pending = True
+        self.delivery_evidence_ready.emit({
+            "evidence": evidence,
+            "force": manual or live,
+        })
+        return True
+
+    def _maybe_emit_live_advisory(self) -> None:
+        cfg = self.engine.config
+        if not cfg.ai_enabled or not cfg.ai_live_enabled:
+            return
+
+        st = self.engine.state
+        now = time.perf_counter()
+        interval = max(1.0, cfg.ai_live_interval_seconds)
+        ball_visible = st.ball.x != 0 or st.ball.y != 0
+        traj = len(st.trajectory_pitch_points)
+        stumps_ready = (
+            self.engine.stump_points is not None
+            and self.engine.stump_points.is_valid()
+        )
+
+        if not ball_visible and traj == 0 and not stumps_ready:
+            return
+
+        should_emit = False
+        if not self._ai_bootstrapped and (ball_visible or stumps_ready):
+            should_emit = True
+            self._ai_bootstrapped = True
+        elif ball_visible and (now - self._last_ai_emit_time) >= interval:
+            should_emit = True
+        elif traj >= self._last_ai_traj_count + 2 and ball_visible:
+            should_emit = True
+
+        if should_emit and self._emit_delivery_evidence(live=True):
+            self._last_ai_emit_time = now
+            self._last_ai_traj_count = traj
+
+    def request_advisory(self, clip_path: str | None = None) -> bool:
+        """On-demand AI analysis for current delivery."""
+        return self._emit_delivery_evidence(clip_path=clip_path, manual=True)

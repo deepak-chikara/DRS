@@ -12,7 +12,7 @@ from drs.config import DRSConfig
 from drs.decision.events import EventDetector
 from drs.decision.verdict import VerdictEngine
 from drs.detectors.hybrid import HybridDetector
-from drs.fusion.calibration import PitchCalibration, StumpPoints, pixel_to_pitch
+from drs.fusion.calibration import PitchCalibration, StumpPoints, pixel_to_pitch_normalized
 from drs.paths import app_root, user_calibration_dir, user_clips_dir, user_matches_dir, user_sessions_dir
 from drs.recording.delivery_clip import DRSCallRecord, DeliveryClipExporter, export_drs_call_clip
 from drs.recording.match_recorder import MatchRecorder
@@ -72,6 +72,7 @@ class DRSEngine:
         self._last_verdict = ""
         self._last_analysis_frame = -1
         self._prime_stumps_on_open = False
+        self._last_drs_call_record_path: Path | None = None
         self._load_calibration()
 
     @property
@@ -287,17 +288,13 @@ class DRSEngine:
         if not self.event_detector._delivery_in_progress(self.state):
             return
 
-        if self._pitch_homography is not None:
-            pt = pixel_to_pitch(self._pitch_homography, x, y)
-            if pt is not None and -0.05 <= pt[0] <= 1.05 and -0.05 <= pt[1] <= 1.05:
-                nx = max(0.0, min(1.0, pt[0]))
-                ny = max(0.0, min(1.0, pt[1]))
-            else:
-                nx = max(0.0, min(1.0, x / max(frame_w, 1)))
-                ny = max(0.0, min(1.0, 1.0 - y / max(frame_h, 1)))
-        else:
-            nx = max(0.0, min(1.0, x / max(frame_w, 1)))
-            ny = max(0.0, min(1.0, 1.0 - y / max(frame_h, 1)))
+        nx, ny = pixel_to_pitch_normalized(
+            x, y,
+            frame_w=frame_w,
+            frame_h=frame_h,
+            homography=self._pitch_homography,
+            stump_points=self._stump_points,
+        )
 
         if self.state.trajectory_pitch_points:
             last_nx, last_ny = self.state.trajectory_pitch_points[-1]
@@ -336,7 +333,7 @@ class DRSEngine:
         )
         match_path = str(self.match_recording_path) if self.match_recording_path else None
         if clip_path:
-            self._delivery_clip_exporter.save_call_record(DRSCallRecord(
+            record = DRSCallRecord(
                 delivery_id=delivery_id,
                 timestamp=call_time,
                 clip_path=str(clip_path),
@@ -346,7 +343,10 @@ class DRSEngine:
                 impact_point=list(self.state.impact_point) if self.state.impact_point else None,
                 verdict=self.state.verdict,
                 verdict_reason=self.state.verdict_reason,
-            ))
+                confidence_overall=self.state.confidence_overall,
+                ai_advisory=None,
+            )
+            self._last_drs_call_record_path = self._delivery_clip_exporter.save_call_record(record)
         self._drs_call_pending = None
         return clip_path
 
@@ -357,6 +357,7 @@ class DRSEngine:
         self.state.ball.x = result.ball_x
         self.state.ball.y = result.ball_y
         self.state.ball.source = result.ball_source
+        self.state.ball.confidence = result.ball_confidence
         self.state.update_ball_diff()
         self.event_detector.process_frame(self.state, result.pitch_contours, result.batsman_contours)
         self._collect_trajectory(result.ball_x, result.ball_y, frame.shape[1], frame.shape[0])
@@ -381,9 +382,51 @@ class DRSEngine:
                 impact_point=self.state.impact_point,
                 motion_class=self.state.last_motion_class,
                 fused_ball=self.state.fused_ball_pitch,
+                verdict=self.state.verdict,
+                verdict_reason=self.state.verdict_reason,
+                confidence_overall=self.state.confidence_overall,
+                ai_advisory=self._ai_advisory_dict_from_state(),
             )
         )
-        logger.info("Verdict: %s — %s", self.state.verdict, self.state.verdict_reason)
+        logger.info(
+            "Verdict: %s (%.0f%% confidence) — %s",
+            self.state.verdict,
+            self.state.confidence_overall * 100,
+            self.state.verdict_reason,
+        )
+
+    def apply_advisory_result(self, result) -> None:
+        """Apply AI advisory to runtime state (main thread only)."""
+        from drs.services.advisory.models import AdvisoryResult
+
+        if not isinstance(result, AdvisoryResult):
+            return
+        self.state.ai_verdict = result.recommended_verdict
+        self.state.ai_summary = result.summary
+        self.state.ai_pending = False
+
+        if (
+            self.config.ai_resolve_review
+            and self.state.verdict == "REVIEW"
+            and result.valid
+            and result.recommended_verdict in ("OUT", "NOT OUT")
+            and result.confidence >= self.config.ai_min_confidence_auto
+        ):
+            self.state.verdict_reason = (
+                f"AI resolved REVIEW → {result.recommended_verdict}: {result.summary}"
+            )
+
+        if self._last_drs_call_record_path and self._last_drs_call_record_path.is_file():
+            from drs.recording.delivery_clip import patch_call_record_ai
+            patch_call_record_ai(self._last_drs_call_record_path, result.to_dict())
+
+    def _ai_advisory_dict_from_state(self) -> dict | None:
+        if not self.state.ai_verdict:
+            return None
+        return {
+            "recommended_verdict": self.state.ai_verdict,
+            "summary": self.state.ai_summary,
+        }
 
     def read_frame(self, playback: PlaybackState) -> tuple[np.ndarray | None, bool]:
         if self.config.mode == "live":

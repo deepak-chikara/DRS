@@ -20,6 +20,10 @@ class DeliveryRecord:
     impact_point: tuple[int, int] | None
     motion_class: str
     fused_ball: tuple[float, float] | None = None
+    verdict: str = ""
+    verdict_reason: str = ""
+    confidence_overall: float = 0.0
+    ai_advisory: dict | None = None
 
 
 @dataclass

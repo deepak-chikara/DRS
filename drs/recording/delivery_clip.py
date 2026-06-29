@@ -24,6 +24,8 @@ class DRSCallRecord:
     impact_point: list[int] | None
     verdict: str
     verdict_reason: str
+    confidence_overall: float = 0.0
+    ai_advisory: dict | None = None
 
 
 class DeliveryClipExporter:
@@ -64,6 +66,17 @@ class DeliveryClipExporter:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(asdict(record), f, indent=2)
         return path
+
+
+def patch_call_record_ai(record_path: Path, ai_advisory: dict) -> None:
+    """Merge AI advisory into an existing DRS call record JSON."""
+    if not record_path.is_file():
+        return
+    with open(record_path, encoding="utf-8") as f:
+        data = json.load(f)
+    data["ai_advisory"] = ai_advisory
+    with open(record_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
 
 
 def slice_buffer_around_time(

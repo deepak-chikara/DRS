@@ -5,6 +5,8 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from drs.fusion.calibration import StumpPoints, ground_y_at_pitch_length
+
 PITCH_LENGTH_M = 20.12
 PITCH_WIDTH_M = 3.05
 STUMP_HEIGHT_M = 0.711
@@ -64,6 +66,44 @@ def _best_monotonic_chain(
     return best if len(best) >= 2 else list(points[:2])
 
 
+def _safe_polyfit(x: np.ndarray, y: np.ndarray, deg: int) -> np.ndarray | None:
+    """Polynomial fit that returns None instead of raising on degenerate data."""
+    if deg < 1 or len(x) <= deg or len(x) != len(y):
+        return None
+    xs = np.asarray(x, dtype=float)
+    ys = np.asarray(y, dtype=float)
+    if not np.all(np.isfinite(xs)) or not np.all(np.isfinite(ys)):
+        return None
+    if np.ptp(xs) < 1e-9:
+        return None
+    try:
+        coeff = np.polyfit(xs, ys, deg)
+    except (np.linalg.LinAlgError, ValueError, FloatingPointError):
+        return None
+    if not np.all(np.isfinite(coeff)):
+        return None
+    return coeff
+
+
+def _smooth_side_profile(profile: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Light smoothing for side elevation; keeps raw profile when fit is unstable."""
+    if len(profile) < 3:
+        return profile
+    lengths = np.array([p[0] for p in profile], dtype=float)
+    heights = np.array([p[1] for p in profile], dtype=float)
+    deg = min(2, len(profile) - 1)
+    coeff = _safe_polyfit(lengths, heights, deg)
+    if coeff is None:
+        return profile
+    return [
+        (
+            float(lengths[i]),
+            float(max(0.0, min(np.polyval(coeff, lengths[i]), MAX_DISPLAY_HEIGHT_M))),
+        )
+        for i in range(len(profile))
+    ]
+
+
 def _smooth_resample_track(
     pitch: list[tuple[float, float]],
     pixel: list[tuple[float, float]] | None,
@@ -77,8 +117,10 @@ def _smooth_resample_track(
     deg = min(2, len(pitch) - 1)
     nx = np.array([p[0] for p in pitch], dtype=float)
     ny = np.array([p[1] for p in pitch], dtype=float)
-    cx = np.polyfit(t, nx, deg)
-    cy = np.polyfit(t, ny, deg)
+    cx = _safe_polyfit(t, nx, deg)
+    cy = _safe_polyfit(t, ny, deg)
+    if cx is None or cy is None:
+        return list(pitch), pixel if pixel and len(pixel) == len(pitch) else None
     new_pitch = [
         (float(np.clip(np.polyval(cx, ti), 0.0, 1.0)), float(np.clip(np.polyval(cy, ti), 0.0, 1.0)))
         for ti in t_new
@@ -88,9 +130,12 @@ def _smooth_resample_track(
     if pixel and len(pixel) == len(pitch):
         px = np.array([p[0] for p in pixel], dtype=float)
         py = np.array([p[1] for p in pixel], dtype=float)
-        cpx = np.polyfit(t, px, deg)
-        cpy = np.polyfit(t, py, deg)
-        new_pixel = [(float(np.polyval(cpx, ti)), float(np.polyval(cpy, ti))) for ti in t_new]
+        cpx = _safe_polyfit(t, px, deg)
+        cpy = _safe_polyfit(t, py, deg)
+        if cpx is None or cpy is None:
+            new_pixel = list(pixel)
+        else:
+            new_pixel = [(float(np.polyval(cpx, ti)), float(np.polyval(cpy, ti))) for ti in t_new]
     return new_pitch, new_pixel
 
 
@@ -280,6 +325,7 @@ def build_side_profile(
     pitch_points: list[tuple[float, float]],
     pixel_points: list[tuple[float, float]],
     frame_h: int,
+    stump_points: StumpPoints | None = None,
 ) -> list[tuple[float, float]]:
     """Build (length_norm, height_m) pairs from paired pitch and pixel trajectories."""
     refined_pitch, refined_pixel = refine_ball_track(pitch_points, pixel_points, sample_count=24)
@@ -291,9 +337,12 @@ def build_side_profile(
 
     count = min(len(refined_pitch), len(refined_pixel))
     py_values = [refined_pixel[i][1] for i in range(count)]
-    ground_y = max(py_values)
-    if ground_y <= 0:
-        ground_y = frame_h * 0.88
+    if stump_points is not None and stump_points.is_valid():
+        ground_y = None
+    else:
+        ground_y = max(py_values)
+        if ground_y <= 0:
+            ground_y = frame_h * 0.88
 
     stump_px_span = max(frame_h * STUMP_PX_SPAN_FRAC, 1.0)
     m_per_px = STUMP_HEIGHT_M / stump_px_span
@@ -302,20 +351,16 @@ def build_side_profile(
     for i in range(count):
         _, ny = refined_pitch[i]
         _, py = refined_pixel[i]
-        height_m = max(0.0, (ground_y - py) * m_per_px)
+        if stump_points is not None and stump_points.is_valid():
+            row_ground_y = ground_y_at_pitch_length(ny, stump_points)
+        else:
+            row_ground_y = ground_y
+        height_m = max(0.0, (row_ground_y - py) * m_per_px)
+        if not np.isfinite(height_m):
+            height_m = 0.0
         profile.append((ny, min(height_m, MAX_DISPLAY_HEIGHT_M)))
 
-    if len(profile) >= 3:
-        lengths = np.array([p[0] for p in profile], dtype=float)
-        heights = np.array([p[1] for p in profile], dtype=float)
-        deg = min(2, len(profile) - 1)
-        coeff = np.polyfit(lengths, heights, deg)
-        profile = [
-            (float(lengths[i]), float(max(0.0, min(np.polyval(coeff, lengths[i]), MAX_DISPLAY_HEIGHT_M))))
-            for i in range(len(profile))
-        ]
-
-    return profile
+    return _smooth_side_profile(profile)
 
 
 def _side_event_height(
@@ -440,6 +485,7 @@ def render_combined_diagram(
     panel_height: int = 480,
     live_ball: tuple[float, float] | None = None,
     live_pixel: tuple[float, float] | None = None,
+    stump_points: StumpPoints | None = None,
 ) -> np.ndarray:
     """Render top-down and side elevation panels side by side."""
     display_pts, display_px = _append_live_point(pitch_points, pixel_points, live_ball, live_pixel)
@@ -457,6 +503,7 @@ def render_combined_diagram(
         display_pts,
         display_px or [],
         frame_h,
+        stump_points=stump_points,
     )
     side = render_side_diagram(
         side_profile,
@@ -502,18 +549,19 @@ def export_combined_diagram_video(
     frame_h: int = 720,
     pitch_bounce: tuple[float, float] | None = None,
     impact: tuple[float, float] | None = None,
+    stump_points: StumpPoints | None = None,
 ) -> None:
     if not pitch_points:
         pitch_points = [(0.5, 0.02), (0.5, 0.5)]
     sample = render_combined_diagram(
         pitch_points, pixel_points, progress=0, frame_h=frame_h,
-        pitch_bounce=pitch_bounce, impact=impact,
+        pitch_bounce=pitch_bounce, impact=impact, stump_points=stump_points,
     )
     h, w = sample.shape[:2]
     writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
     for i in range(len(pitch_points)):
         writer.write(render_combined_diagram(
             pitch_points, pixel_points, progress=i, frame_h=frame_h,
-            pitch_bounce=pitch_bounce, impact=impact,
+            pitch_bounce=pitch_bounce, impact=impact, stump_points=stump_points,
         ))
     writer.release()

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
+from drs.fusion.calibration import StumpPoints
 from drs.ui.pitch_diagram import (
     build_side_profile,
     export_combined_diagram_video,
@@ -47,6 +48,36 @@ def test_build_side_profile():
     profile = build_side_profile(pitch, pixels, frame_h=720)
     assert len(profile) >= 3
     assert profile[0][1] < profile[-1][1]
+
+
+def test_build_side_profile_with_stumps_uses_pitch_ground():
+    stumps = StumpPoints(
+        striker_off=(615, 221),
+        striker_leg=(640, 221),
+        bowler_off=(611, 495),
+        bowler_leg=(643, 492),
+    )
+    pitch_ground = [(0.5, 0.5)]
+    pitch_air = [(0.5, 0.5)]
+    ground_y = 358.0
+    on_ground = build_side_profile(
+        pitch_ground, [(627.0, ground_y)], frame_h=720, stump_points=stumps,
+    )
+    airborne = build_side_profile(
+        pitch_air, [(627.0, ground_y - 50.0)], frame_h=720, stump_points=stumps,
+    )
+    assert on_ground[0][1] < 0.05
+    assert airborne[0][1] > on_ground[0][1]
+
+
+def test_build_side_profile_degenerate_lengths_no_crash():
+    """Live playback can produce identical pitch lengths — must not crash polyfit."""
+    pitch = [(0.5, 0.5), (0.5, 0.5), (0.5, 0.5), (0.5, 0.5)]
+    pixels = [(640.0, 400.0), (640.0, 380.0), (640.0, 360.0), (640.0, 340.0)]
+    profile = build_side_profile(pitch, pixels, frame_h=720)
+    assert len(profile) >= 1
+    combined = render_combined_diagram(pitch, pixels, progress=2, frame_h=720, live_ball=(0.5, 0.5))
+    assert combined.shape[0] > 0
 
 
 def test_render_side_diagram_no_crash():

@@ -9,6 +9,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+# Three stumps span 9 inches (22.86 cm) across a 3.05 m pitch — matches pitch diagram.
+STUMP_SET_WIDTH_FRAC = 22.86 / 305.0
+
 
 @dataclass
 class StumpPoints:
@@ -161,3 +164,57 @@ def is_inside_corridor(x: int, y: int, stump_points: StumpPoints, margin_px: flo
     """True if (x, y) lies between the off and leg stump lines at that y."""
     x_min, x_max = corridor_bounds_at_y(stump_points, y)
     return (x_min - margin_px) <= x <= (x_max + margin_px)
+
+
+def is_usable_homography(homography: np.ndarray | None) -> bool:
+    """True when homography is a real pitch-plane calibration, not identity."""
+    if homography is None or homography.shape != (3, 3):
+        return False
+    return not np.allclose(homography, np.eye(3), atol=1e-3)
+
+
+def ground_y_at_pitch_length(ny: float, stump_points: StumpPoints) -> float:
+    """Image row of the pitch surface at normalized length ny (0=striker, 1=bowler)."""
+    striker_y = float(stump_points.striker_off[1])
+    bowler_y = float(stump_points.bowler_off[1])
+    return striker_y + ny * (bowler_y - striker_y)
+
+
+def pixel_to_pitch_from_stumps(x: int, y: float, stump_points: StumpPoints) -> tuple[float, float]:
+    """Map pixel coords to normalized pitch plane using locked stump corridor."""
+    striker_y = float(stump_points.striker_off[1])
+    bowler_y = float(stump_points.bowler_off[1])
+    if abs(bowler_y - striker_y) < 1.0:
+        ny = 0.5
+    else:
+        ny = (float(y) - striker_y) / (bowler_y - striker_y)
+        ny = max(0.0, min(1.0, ny))
+
+    x_min, x_max = corridor_bounds_at_y(stump_points, float(y))
+    width = max(x_max - x_min, 1.0)
+    rel = max(0.0, min(1.0, (float(x) - x_min) / width))
+    nx = 0.5 + (rel - 0.5) * STUMP_SET_WIDTH_FRAC
+    return max(0.0, min(1.0, nx)), ny
+
+
+def pixel_to_pitch_normalized(
+    x: int,
+    y: int,
+    *,
+    frame_w: int,
+    frame_h: int,
+    homography: np.ndarray | None = None,
+    stump_points: StumpPoints | None = None,
+) -> tuple[float, float]:
+    """Map pixel to normalized pitch coords: homography, then stumps, then frame fallback."""
+    if is_usable_homography(homography):
+        pt = pixel_to_pitch(homography, x, y)
+        if pt is not None and -0.05 <= pt[0] <= 1.05 and -0.05 <= pt[1] <= 1.05:
+            return max(0.0, min(1.0, pt[0])), max(0.0, min(1.0, pt[1]))
+
+    if stump_points is not None and stump_points.is_valid():
+        return pixel_to_pitch_from_stumps(x, y, stump_points)
+
+    nx = max(0.0, min(1.0, x / max(frame_w, 1)))
+    ny = max(0.0, min(1.0, 1.0 - y / max(frame_h, 1)))
+    return nx, ny

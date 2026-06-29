@@ -8,6 +8,7 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from drs.app.image_utils import bgr_to_qimage
+from drs.fusion.calibration import StumpPoints
 from drs.ui.pitch_diagram import render_combined_diagram, render_pitch_diagram
 
 
@@ -19,6 +20,7 @@ class PitchDiagramWidget(QWidget):
         self._live_ball: tuple[float, float] | None = None
         self._live_pixel: tuple[float, float] | None = None
         self._frame_h = 720
+        self._stump_points: StumpPoints | None = None
         self._pitch_bounce: tuple[float, float] | None = None
         self._impact: tuple[float, float] | None = None
         self._progress = 0
@@ -39,6 +41,7 @@ class PitchDiagramWidget(QWidget):
         impact: tuple[float, float] | None = None,
         pixel_points: list[tuple[float, float]] | None = None,
         frame_h: int = 720,
+        stump_points: StumpPoints | None = None,
         animate: bool = False,
         live_ball: tuple[float, float] | None = None,
         live_pixel: tuple[float, float] | None = None,
@@ -48,6 +51,7 @@ class PitchDiagramWidget(QWidget):
         self._live_ball = live_ball
         self._live_pixel = live_pixel
         self._frame_h = frame_h
+        self._stump_points = stump_points
         self._pitch_bounce = pitch_bounce
         self._impact = impact
         self._timer.stop()
@@ -83,6 +87,7 @@ class PitchDiagramWidget(QWidget):
                 impact=self._impact,
                 live_ball=self._live_ball,
                 live_pixel=self._live_pixel,
+                stump_points=self._stump_points,
             )
         else:
             img = render_pitch_diagram(

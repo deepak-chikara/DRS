@@ -64,6 +64,7 @@ def main() -> None:
         frame_h=delivery.frame_h,
         pitch_bounce=delivery.pitch_bounce,
         impact=delivery.impact,
+        stump_points=delivery.stump_points,
     )
     print(f"Saved animated diagram: {out}")
 

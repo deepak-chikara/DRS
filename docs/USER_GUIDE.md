@@ -337,4 +337,67 @@ detection:
   mode: hybrid
 ```
 
-**Requirements:** `opencv-python`, `numpy`, `cvzone`, `pyyaml`. Optional: `ultralytics` for live hybrid mode.
+**Requirements:** `opencv-python`, `numpy`, `cvzone`, `pyyaml`, `httpx`. Optional: `ultralytics` for live hybrid mode; Ollama for AI advisory.
+
+---
+
+## 13. AI Advisory (Ollama)
+
+DRS Pro includes an optional **AI Review** panel that uses a local [Ollama](https://ollama.com) model to explain decisions, score evidence quality, and resolve ambiguous REVIEW cases.
+
+### Setup Ollama
+
+1. Install Ollama from https://ollama.com
+2. Pull a model (recommended for speed and JSON output):
+
+```powershell
+ollama pull llama3.2
+```
+
+3. Ensure Ollama is running (`ollama serve` starts automatically on Windows).
+
+### Enable in DRS
+
+1. In the app: **Tools → Settings** (or **Tools → AI Settings**)
+2. Check **Enable AI Review panel and Ollama advisory**
+3. Set model to `llama3.2` (or your pulled model)
+4. Click **Test Ollama** — should say Connected
+5. Click **Save**
+
+Alternatively edit `%LOCALAPPDATA%\DRS\settings.yaml`:
+
+```yaml
+ai:
+  enabled: true
+  provider: ollama
+  min_confidence_auto: 0.72
+  resolve_review: true
+  ollama:
+    base_url: "http://127.0.0.1:11434"
+    model: "llama3.2"
+    timeout_seconds: 25
+    temperature: 0.1
+```
+
+Restart DRS Pro. The **AI Review** dock shows Ollama connection status.
+
+### How it works
+
+- **Computer vision** remains primary: ball detection and stump corridor geometry produce OUT / NOT OUT / REVIEW.
+- **Confidence scoring** downgrades weak OUT/NOT OUT calls to REVIEW when tracking or calibration is poor.
+- **AI advisory** runs asynchronously (never blocks video playback). It receives structured delivery evidence and returns a recommended verdict with reasoning.
+- AI may resolve **REVIEW → OUT/NOT OUT** when confidence is high; it **cannot silently override** a confident CV OUT/NOT OUT that it disagrees with.
+
+### File and live mode
+
+- **Tools → Analyze Delivery with AI** runs Ollama on the **current frame/delivery** (does not enable AI by itself).
+- **Automatic:** When AI is enabled, analysis also runs when OUT/NOT OUT/REVIEW is issued during playback.
+- **Live mode:** Press **DRS Call** (F9); when the clip is saved, AI review runs on that delivery.
+
+### Alternative free models
+
+```powershell
+ollama pull qwen2.5:3b
+```
+
+Set `ai.ollama.model: "qwen2.5:3b"` in settings.
