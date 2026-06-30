@@ -30,7 +30,7 @@ thresholds:
   impact_batleg_px: 25
 
 performance:
-  detection_scale: 0.5
+  detection_scale: 0.35
   pitch_cache_frames: 30
 
 buffer_seconds: 30
@@ -53,6 +53,8 @@ ai:
     temperature: 0.1
   live_enabled: true
   live_interval_seconds: 2.0
+  skip_if_cv_confident: true
+  cv_confidence_skip_threshold: 0.80
 
 live:
   detection_mode: hybrid

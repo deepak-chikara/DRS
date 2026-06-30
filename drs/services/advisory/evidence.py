@@ -60,6 +60,9 @@ def infer_cv_verdict(
         return "REVIEW", "Live ball tracking — awaiting pad/impact moment"
 
     if live:
+        traj = len(state.trajectory_pitch_points)
+        if stump_ok and traj == 0 and state.ball.x == 0:
+            return "REVIEW", "Live analysis — ball not detected yet; stumps calibrated"
         return "REVIEW", "Live analysis — waiting for ball detection"
 
     return "REVIEW", "Manual AI analysis — play to pad/LBW moment or scrub to impact frame"

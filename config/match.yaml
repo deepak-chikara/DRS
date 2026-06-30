@@ -15,6 +15,9 @@ cameras:
 detection:
   mode: hybrid
 
+performance:
+  detection_scale: 0.35
+
 live:
   detection_mode: hybrid
 

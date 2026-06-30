@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFileDialog,
     QDockWidget,
@@ -28,9 +28,12 @@ from drs.app.settings_dialog import SettingsDialog
 from drs.app.setup_wizard import SetupWizard
 from drs.app.timeline_widget import TimelineWidget
 from drs.app.video_widget import VideoWidget
-from drs.config import DRSConfig, load_config, save_config
+from drs.config import DRSConfig, save_config
+from drs.grounds import apply_ground_preset, save_ground_preset
+from drs.app.clip_browser_dialog import ClipBrowserDialog
+from drs.app.live_setup_dialog import LiveSetupDialog
 from drs.engine import DRSEngine
-from drs.paths import app_root, user_calibration_dir, user_config_path
+from drs.paths import app_root, bundled_doc_path, user_calibration_dir, user_config_path
 from drs.services.advisory.factory import create_advisory_service
 from drs.services.advisory.models import AdvisoryResult, DeliveryEvidence
 from drs.ui.calibrate_stumps import calibrate_stumps_on_frame, read_calibration_frame, save_pitch_calibration
@@ -40,10 +43,12 @@ logger = logging.getLogger("drs.app")
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, config: DRSConfig):
+    def __init__(self, config: DRSConfig, app_icon: QIcon | None = None):
         super().__init__()
         self.config = config
         self.setWindowTitle(__app_name__)
+        if app_icon is not None and not app_icon.isNull():
+            self.setWindowIcon(app_icon)
         self.resize(1280, 720)
 
         self._engine = DRSEngine(config)
@@ -96,6 +101,9 @@ class MainWindow(QMainWindow):
         save_act = QAction("&Save Clip", self)
         save_act.triggered.connect(self._save_clip)
         file_menu.addAction(save_act)
+        clips_act = QAction("&Browse Clips...", self)
+        clips_act.triggered.connect(self._browse_clips)
+        file_menu.addAction(clips_act)
         file_menu.addSeparator()
         exit_act = QAction("E&xit", self)
         exit_act.triggered.connect(self.close)
@@ -122,6 +130,10 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(settings_act)
 
         help_menu = self.menuBar().addMenu("&Help")
+        guide_act = QAction("&User Guide", self)
+        guide_act.triggered.connect(self._open_user_guide)
+        help_menu.addAction(guide_act)
+        help_menu.addSeparator()
         about_act = QAction("&About", self)
         about_act.triggered.connect(self._about)
         help_menu.addAction(about_act)
@@ -149,6 +161,10 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("R"), self, self._restart)
         QShortcut(QKeySequence("S"), self, self._save_clip)
         QShortcut(QKeySequence("F9"), self, self._drs_call)
+        QShortcut(QKeySequence(Qt.Key.Key_Home), self, self._jump_start)
+        QShortcut(QKeySequence(Qt.Key.Key_End), self, self._jump_end)
+        QShortcut(QKeySequence("B"), self, self._enter_buffer)
+        QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self._exit_buffer)
 
     def _bind_timeline(self) -> None:
         self._timeline.play_clicked.connect(self._play)
@@ -179,6 +195,9 @@ class MainWindow(QMainWindow):
         self._worker.delivery_evidence_ready.connect(self._on_delivery_evidence)
         self._refresh_advisory_service()
         self._worker.start()
+        if not self.config.mode == "live":
+            self._worker.play()
+            self._status.showMessage("Playing — Space to pause, R to restart")
 
     def _refresh_advisory_service(self) -> None:
         self._advisory_service = create_advisory_service(self.config)
@@ -199,7 +218,7 @@ class MainWindow(QMainWindow):
             )
 
     def _on_playback_ended(self) -> None:
-        self._status.showMessage("End of video — paused at last frame")
+        self._status.showMessage("End of video — press Play or R to restart")
         if not self._worker or not self.config.diagram_enabled:
             return
         st = self._worker.engine.state
@@ -229,25 +248,21 @@ class MainWindow(QMainWindow):
         self._status.showMessage(f"Loaded: {Path(path).name}")
 
     def _start_live(self) -> None:
-        match_cfg = app_root() / "config" / "match.yaml"
-        if match_cfg.is_file():
-            live = load_config(match_cfg)
-            self.config.mode = "live"
-            self.config.cameras = live.cameras
-            self.config.detection_mode = live.detection_mode
-            self.config.ring_buffer_seconds = live.ring_buffer_seconds
-            self.config.recording_enabled = live.recording_enabled
-            self.config.recording_output_dir = live.recording_output_dir
-            self.config.recording_segment_minutes = live.recording_segment_minutes
-            self.config.recording_width = live.recording_width
-            self.config.clip_pre_roll_seconds = live.clip_pre_roll_seconds
-            self.config.clip_post_roll_seconds = live.clip_post_roll_seconds
-            self.config.diagram_enabled = live.diagram_enabled
-        else:
-            self.config.mode = "live"
-        save_config(self.config, user_config_path())
+        dlg = LiveSetupDialog(self.config, self)
+        if not dlg.exec():
+            return
+        save_ground_preset(self.config)
         self._start_worker()
         self._status.showMessage("Live match — recording started (see status bar)")
+        if MainWindow.needs_setup(self.config):
+            reply = QMessageBox.question(
+                self,
+                "Calibrate stumps",
+                "No calibration for this ground.\n\nCalibrate stumps from the live camera now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._calibrate(from_live=True)
 
     def _play(self) -> None:
         if self._worker:
@@ -399,14 +414,24 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "Save clip", "Nothing in buffer to save.")
 
-    def _calibrate(self) -> None:
-        video = self.config.video_path
-        if not Path(video).is_file():
-            QMessageBox.warning(self, "Calibrate", "Open a video first.")
-            return
-        frame = read_calibration_frame(video)
+    def _calibrate(self, *, from_live: bool = False) -> None:
+        frame = None
+        if from_live or (self._worker and self._worker.engine.is_live):
+            if not self._worker:
+                QMessageBox.warning(self, "Calibrate", "Start live match first.")
+                return
+            frame = self._worker.capture_calibration_frame()
+            if frame is None:
+                QMessageBox.warning(self, "Calibrate", "Cannot read live camera frame.")
+                return
+        else:
+            video = self.config.video_path
+            if not Path(video).is_file():
+                QMessageBox.warning(self, "Calibrate", "Open a video or start live match first.")
+                return
+            frame = read_calibration_frame(video)
         if frame is None:
-            QMessageBox.critical(self, "Calibrate", "Cannot read video frame.")
+            QMessageBox.critical(self, "Calibrate", "Cannot read calibration frame.")
             return
         cam = calibrate_stumps_on_frame(frame, camera_name="primary")
         if cam is None:
@@ -415,6 +440,7 @@ class MainWindow(QMainWindow):
         save_pitch_calibration(cam, ground_id=self.config.ground_id, output_path=out)
         self.config.calibration_file = str(out)
         save_config(self.config, user_config_path())
+        save_ground_preset(self.config)
         self._engine.set_stump_points(cam.stump_points, from_calibration=True)
         QMessageBox.information(self, "Calibration saved", str(out))
 
@@ -427,7 +453,10 @@ class MainWindow(QMainWindow):
     def _settings(self) -> None:
         dlg = SettingsDialog(self.config, self)
         if dlg.exec():
+            was_running = self._worker is not None
             self._refresh_advisory_service()
+            if was_running:
+                self._start_worker()
             msg = "Settings saved."
             if self.config.ai_enabled:
                 msg += " AI Review enabled — use Tools → Analyze Delivery with AI after a pad/LBW moment."
@@ -445,10 +474,13 @@ class MainWindow(QMainWindow):
     def _on_verdict(self, verdict: str, reason: str) -> None:
         conf_pct = 0
         ai_note = ""
+        ai_verdict = ""
         if self._worker:
             conf_pct = int(self._worker.engine.state.confidence_overall * 100)
             if self._worker.engine.state.ai_verdict:
-                ai_note = f" — AI: {self._worker.engine.state.ai_verdict}"
+                ai_verdict = self._worker.engine.state.ai_verdict
+                ai_note = f" — AI: {ai_verdict}"
+        self._video.set_verdict_banner(verdict, confidence=conf_pct, ai_verdict=ai_verdict)
         self._status.showMessage(f"Verdict: {verdict} ({conf_pct}% confidence){ai_note} — {reason}")
         logger.info("UI verdict: %s (%d%%)", verdict, conf_pct)
 
@@ -471,6 +503,7 @@ class MainWindow(QMainWindow):
         self._advisory_panel.show_result(result)
         if self._worker:
             self._worker.engine.apply_advisory_result(result)
+            self._worker.engine.state.ai_pending = False
         ai = result.recommended_verdict
         self._status.showMessage(
             f"AI review: {ai} ({int(result.confidence * 100)}%) — {result.summary}"
@@ -478,6 +511,9 @@ class MainWindow(QMainWindow):
 
     def _on_advisory_failed(self, message: str) -> None:
         self._advisory_panel.show_error(message)
+        if self._worker:
+            self._worker.engine.state.ai_pending = False
+            self._worker._ai_pending_since = 0.0
 
     def _analyze_with_ai(self) -> None:
         if not self.config.ai_enabled:
@@ -531,6 +567,41 @@ class MainWindow(QMainWindow):
         if self._advisory_worker.isRunning():
             self._advisory_worker.wait(3000)
         event.accept()
+
+    def _browse_clips(self) -> None:
+        ClipBrowserDialog(self, on_open_video=self._load_video_path).exec()
+
+    def _open_user_guide(self) -> None:
+        import os
+        import subprocess
+        import sys
+
+        guide = bundled_doc_path("USER_GUIDE.md")
+        dev_guide = app_root().parent / "docs" / "USER_GUIDE.md" if not guide.is_file() else guide
+        path = guide if guide.is_file() else dev_guide
+        if not path.is_file():
+            QMessageBox.warning(self, "User Guide", "USER_GUIDE.md not found in installation.")
+            return
+        if sys.platform == "win32":
+            os.startfile(path)  # noqa: S606
+        else:
+            subprocess.run(["xdg-open", str(path)], check=False)
+
+    def _jump_start(self) -> None:
+        if self._worker:
+            self._worker.jump_start()
+
+    def _jump_end(self) -> None:
+        if self._worker:
+            self._worker.jump_end()
+
+    def _enter_buffer(self) -> None:
+        if self._worker:
+            self._worker.enter_buffer()
+
+    def _exit_buffer(self) -> None:
+        if self._worker:
+            self._worker.exit_buffer()
 
     @staticmethod
     def needs_setup(config: DRSConfig) -> bool:

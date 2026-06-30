@@ -65,6 +65,8 @@ class DRSConfig:
     ollama_temperature: float = 0.1
     ai_live_enabled: bool = True
     ai_live_interval_seconds: float = 2.0
+    ai_skip_if_cv_confident: bool = True
+    ai_cv_confidence_skip_threshold: float = 0.80
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -167,6 +169,10 @@ def load_config(path: str | Path) -> DRSConfig:
         ollama_temperature=float(data.get("ai", {}).get("ollama", {}).get("temperature", 0.1)),
         ai_live_enabled=data.get("ai", {}).get("live_enabled", True),
         ai_live_interval_seconds=float(data.get("ai", {}).get("live_interval_seconds", 2.0)),
+        ai_skip_if_cv_confident=data.get("ai", {}).get("skip_if_cv_confident", True),
+        ai_cv_confidence_skip_threshold=float(
+            data.get("ai", {}).get("cv_confidence_skip_threshold", 0.80)
+        ),
         raw=data,
     )
 
@@ -226,6 +232,8 @@ def save_config(config: DRSConfig, path: str | Path) -> None:
     })
     data["ai"]["live_enabled"] = config.ai_live_enabled
     data["ai"]["live_interval_seconds"] = config.ai_live_interval_seconds
+    data["ai"]["skip_if_cv_confident"] = config.ai_skip_if_cv_confident
+    data["ai"]["cv_confidence_skip_threshold"] = config.ai_cv_confidence_skip_threshold
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
@@ -233,10 +241,12 @@ def save_config(config: DRSConfig, path: str | Path) -> None:
 
 def load_user_config() -> DRSConfig:
     """Load config from user profile, falling back to bundled default."""
+    from drs.grounds import apply_ground_preset
     from drs.paths import ensure_user_config
 
     path = ensure_user_config()
     cfg = load_config(path)
+    apply_ground_preset(cfg, cfg.ground_id)
     cfg.session_log_dir = str(user_sessions_dir())
     if cfg.calibration_file:
         cal = Path(cfg.calibration_file)

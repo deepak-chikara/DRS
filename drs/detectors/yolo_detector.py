@@ -6,6 +6,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from drs.detectors.model_loader import resolve_yolo_model
+
+# COCO class 32 = sports ball. Cricket-specific weights can replace yolov8n.pt via config.
+BALL_CLASS_NAMES = frozenset({"sports ball", "ball", "cricket ball"})
+
 
 @dataclass
 class Detection:
@@ -21,11 +26,10 @@ class Detection:
 class YOLODetector:
     """Ultralytics YOLOv8 detector for sports ball and person classes."""
 
-    BALL_CLASS = "sports ball"
     PERSON_CLASS = "person"
 
     def __init__(self, model_path: str = "yolov8n.pt", ball_conf: float = 0.25, person_conf: float = 0.4):
-        self.model_path = model_path
+        self.model_path = resolve_yolo_model(model_path)
         self.ball_conf = ball_conf
         self.person_conf = person_conf
         self._model = None
@@ -71,8 +75,12 @@ class YOLODetector:
                 det = Detection(cx, cy, w, h, conf, name)
                 all_dets.append(det)
 
-                if name == self.BALL_CLASS and conf >= self.ball_conf:
+                is_ball = name in BALL_CLASS_NAMES or name.lower().endswith("ball")
+                if is_ball and conf >= self.ball_conf:
+                    # Prefer compact detections typical of cricket ball at club distance
                     if ball is None or conf > ball.confidence:
+                        ball = det
+                    elif conf == ball.confidence and w * h < ball.width * ball.height:
                         ball = det
                 elif name == self.PERSON_CLASS and conf >= self.person_conf:
                     if person is None or (y2 - y1) > person.height:

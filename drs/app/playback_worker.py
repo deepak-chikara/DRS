@@ -39,6 +39,7 @@ class PlaybackWorker(QThread):
         self._last_ai_emit_time = 0.0
         self._last_ai_traj_count = 0
         self._ai_bootstrapped = False
+        self._ai_pending_since = 0.0
 
     def stop(self) -> None:
         self._running = False
@@ -76,6 +77,28 @@ class PlaybackWorker(QThread):
     def drs_call(self) -> None:
         self._set_command("drs_call")
 
+    def jump_start(self) -> None:
+        self._set_command("jump_start")
+
+    def jump_end(self) -> None:
+        self._set_command("jump_end")
+
+    def enter_buffer(self) -> None:
+        self._set_command("buffer_enter")
+
+    def exit_buffer(self) -> None:
+        self._set_command("buffer_exit")
+
+    def capture_calibration_frame(self):
+        import numpy as np
+
+        if not self.engine.is_live:
+            return None
+        pkt = self.engine._grabber.read_latest() if self.engine._grabber else None
+        if pkt is None or pkt.frame is None:
+            return None
+        return pkt.frame.copy()
+
     def _clear_eof(self) -> None:
         self._at_eof = False
 
@@ -109,10 +132,35 @@ class PlaybackWorker(QThread):
         elif cmd == "restart":
             self._clear_eof()
             self._last_processed_pos = -1
+            self._ai_bootstrapped = False
+            self._last_ai_emit_time = 0.0
             self.engine.on_playback_action("restart", self.playback, prev)
             self.playback.mode = ViewMode.PAUSED
         elif cmd == "drs_call":
             self.engine.trigger_drs_call()
+        elif cmd == "jump_start":
+            self._clear_eof()
+            self.playback.frame_pos = 0
+            self.playback.mode = ViewMode.PAUSED
+            self.engine.on_playback_action("jump_start", self.playback, prev)
+            self._last_processed_pos = -1
+        elif cmd == "jump_end":
+            self._clear_eof()
+            max_pos = max(0, self._total - 1)
+            self.playback.frame_pos = max_pos
+            self.playback.mode = ViewMode.PAUSED
+            self.engine.on_playback_action("jump_end", self.playback, prev)
+            self._last_processed_pos = -1
+        elif cmd == "buffer_enter":
+            buf_len = len(self.engine.ring_buffer)
+            if buf_len > 0:
+                self.playback.mode = ViewMode.BUFFER
+                self.playback.buffer_index = buf_len - 1
+                self._last_processed_pos = -1
+        elif cmd == "buffer_exit":
+            if self.playback.mode == ViewMode.BUFFER:
+                self.playback.mode = ViewMode.PAUSED
+                self._last_processed_pos = -1
         elif cmd.startswith("seek:"):
             self._clear_eof()
             max_pos = max(0, self._total - 1)
@@ -123,16 +171,26 @@ class PlaybackWorker(QThread):
         elif cmd.startswith("back:"):
             self._clear_eof()
             delta = int(cmd.split(":")[1])
-            self.playback.frame_pos = max(0, self.playback.frame_pos - delta)
-            self.playback.mode = ViewMode.PAUSED
+            if self.playback.mode == ViewMode.BUFFER:
+                buf_len = len(self.engine.ring_buffer)
+                if buf_len:
+                    self.playback.buffer_index = max(0, self.playback.buffer_index - delta)
+            else:
+                self.playback.frame_pos = max(0, self.playback.frame_pos - delta)
+            self.playback.mode = ViewMode.PAUSED if self.playback.mode != ViewMode.BUFFER else ViewMode.BUFFER
             self.engine._sequential_play = False
             self._last_processed_pos = -1
         elif cmd.startswith("fwd:"):
             self._clear_eof()
             delta = int(cmd.split(":")[1])
-            max_pos = max(0, self._total - 1)
-            self.playback.frame_pos = min(max_pos, self.playback.frame_pos + delta)
-            self.playback.mode = ViewMode.PAUSED
+            if self.playback.mode == ViewMode.BUFFER:
+                buf_len = len(self.engine.ring_buffer)
+                if buf_len:
+                    self.playback.buffer_index = min(buf_len - 1, self.playback.buffer_index + delta)
+            else:
+                max_pos = max(0, self._total - 1)
+                self.playback.frame_pos = min(max_pos, self.playback.frame_pos + delta)
+            self.playback.mode = ViewMode.PAUSED if self.playback.mode != ViewMode.BUFFER else ViewMode.BUFFER
             self.engine._sequential_play = False
             self._last_processed_pos = -1
 
@@ -339,6 +397,21 @@ class PlaybackWorker(QThread):
 
         st = self.engine.state
         now = time.perf_counter()
+        if cfg.ai_skip_if_cv_confident:
+            if (
+                st.verdict in ("OUT", "NOT OUT")
+                and st.confidence_overall >= cfg.ai_cv_confidence_skip_threshold
+            ):
+                return
+
+        if st.ai_pending:
+            if self._ai_pending_since and (now - self._ai_pending_since) > 35.0:
+                st.ai_pending = False
+                self._ai_pending_since = 0.0
+            else:
+                if not self._ai_pending_since:
+                    self._ai_pending_since = now
+                return
         interval = max(1.0, cfg.ai_live_interval_seconds)
         ball_visible = st.ball.x != 0 or st.ball.y != 0
         traj = len(st.trajectory_pitch_points)
@@ -356,12 +429,16 @@ class PlaybackWorker(QThread):
             self._ai_bootstrapped = True
         elif ball_visible and (now - self._last_ai_emit_time) >= interval:
             should_emit = True
+        elif self.playback.mode == ViewMode.PLAYING and (now - self._last_ai_emit_time) >= interval * 2:
+            # Keep AI updating during playback even when ball flickers off-screen
+            should_emit = True
         elif traj >= self._last_ai_traj_count + 2 and ball_visible:
             should_emit = True
 
         if should_emit and self._emit_delivery_evidence(live=True):
             self._last_ai_emit_time = now
             self._last_ai_traj_count = traj
+            self._ai_pending_since = now
 
     def request_advisory(self, clip_path: str | None = None) -> bool:
         """On-demand AI analysis for current delivery."""

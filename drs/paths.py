@@ -9,9 +9,16 @@ from pathlib import Path
 
 
 def app_root() -> Path:
-    """Project or PyInstaller bundle root."""
+    """Project or PyInstaller bundle root (_MEIPASS when frozen)."""
     if getattr(sys, "frozen", False):
         return Path(sys._MEIPASS)  # type: ignore[attr-defined]
+    return Path(__file__).resolve().parent.parent
+
+
+def install_dir() -> Path:
+    """Directory containing the installed executable (writable sibling files)."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
 
 
@@ -59,6 +66,10 @@ def user_calibration_dir() -> Path:
 
 def bundled_config_path(name: str = "default.yaml") -> Path:
     return app_root() / "config" / name
+
+
+def bundled_doc_path(name: str) -> Path:
+    return app_root() / "docs" / name
 
 
 def ensure_user_config() -> Path:

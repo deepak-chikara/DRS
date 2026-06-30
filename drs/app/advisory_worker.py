@@ -34,7 +34,9 @@ class AdvisoryWorker(QThread):
         self._service = service
 
     def check_provider(self) -> None:
+        self._mutex.lock()
         self._check_only = True
+        self._mutex.unlock()
         if not self.isRunning():
             self.start()
 
@@ -44,25 +46,26 @@ class AdvisoryWorker(QThread):
             return
         self._mutex.lock()
         self._pending = evidence
-        self._force = force
+        self._force = force or self._force
+        self._check_only = False
         self._mutex.unlock()
         if not self.isRunning():
             self.start()
 
     def run(self) -> None:
         if self._check_only:
+            self._mutex.lock()
             self._check_only = False
+            self._mutex.unlock()
             available = self._service.is_available()
             label = "Connected" if available else "Offline — start Ollama (ollama serve)"
             self.provider_status.emit(available, label)
-            return
+            # Fall through — process any queued analyze request
 
         while True:
             self._mutex.lock()
             evidence = self._pending
-            force = self._force
             self._pending = None
-            self._force = False
             self._mutex.unlock()
             if evidence is None:
                 break

@@ -55,26 +55,18 @@ python main.py --video lbw-2.mp4
 
 (Opens Qt app; set video in File → Open if not auto-loaded.)
 
-## 2b. Quick start — recorded video (legacy)
-
-```powershell
-python main.py
-```
-
-Or specify a video:
-
-```powershell
-python main.py --video lbw-2.mp4
-```
-
 ### How it works
 1. Video plays with **stump lines**, **ball tracking**, and **batsman detection** on every frame.
 2. Yellow perspective lines = stump corridor (off-stump to off-stump, leg-stump to leg-stump). Lines stay **fixed** once set — they do not move when the batsman moves.
-3. When the ball hits the pad inside the corridor, DRS shows **OUT**; outside = **NOT OUT**; uncertain = **REVIEW**.
+3. When the ball hits the pad inside the corridor, DRS shows **OUT**; outside = **NOT OUT**; uncertain = **REVIEW**. A large verdict banner appears on the video panel.
 4. Press **Space** to pause and step frame-by-frame with **J/K** or **A/D**.
 5. Press **R** to restart the video and reset the delivery state.
 
-**Important:** OUT/NOT OUT is an **assist** for club review — not an official umpire decision.
+**Important:** OUT/NOT OUT is **line assist** for club review — not height, bat-pad, or snick. See Help → About.
+
+### Live match (no YAML editing)
+
+**File → Start Live Match** opens a setup dialog: ground ID, USB/RTSP camera, detection mode, buffer, and clip settings. After starting, use **Tools → Calibrate Stumps** on the live camera frame.
 
 ### Calibrate stump lines (do once per ground)
 

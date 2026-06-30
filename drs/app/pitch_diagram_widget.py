@@ -28,8 +28,14 @@ class PitchDiagramWidget(QWidget):
         self._label = QLabel("Pitch diagram")
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._label.setMinimumSize(560, 360)
+        self._scope_label = QLabel(
+            "Side view: height hint only — corridor line assist is the primary verdict."
+        )
+        self._scope_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._scope_label.setStyleSheet("color: #888; font-size: 11px;")
         layout = QVBoxLayout(self)
         layout.addWidget(self._label)
+        layout.addWidget(self._scope_label)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
 

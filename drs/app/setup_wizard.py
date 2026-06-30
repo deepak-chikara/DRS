@@ -24,8 +24,11 @@ class WelcomePage(QWizardPage):
         self.setTitle("Welcome to DRS Pro")
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(
-            "This wizard helps you set up stump line calibration for your ground.\n\n"
-            "You will open a sample video frame and click the four stump base points."
+            "First-run checklist:\n\n"
+            "• Stump calibration is required for accurate line assist\n"
+            "• Sample video from your ground camera angle (or calibrate live later)\n"
+            "• Ollama is optional — enable AI Review in Settings after install\n\n"
+            "This wizard saves calibration per ground ID."
         ))
 
 

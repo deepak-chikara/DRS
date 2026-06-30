@@ -1,0 +1,10 @@
+# One YouTube URL per line. Lines starting with # are ignored.
+# Search YouTube for side-on club LBW clips, paste URLs below, then run:
+#   python tools/fetch_test_videos.py
+#
+# Example searches (find URLs yourself — do not commit downloaded MP4s to git):
+#   club cricket lbw appeal side view
+#   village cricket lbw wicket
+#   cricket lbw slow motion side
+
+# https://www.youtube.com/watch?v=EXAMPLE

@@ -68,6 +68,12 @@ class HybridDetector:
         self._pitch_contours: list = []
         self._pitch_cache_counter = 0
 
+    def reset_tracker(self) -> None:
+        self.tracker.reset()
+
+    def update_hsv(self, hsv_values: dict) -> None:
+        self.hsv_values = dict(hsv_values)
+
     def _resize_for_detection(self, img: np.ndarray) -> tuple[np.ndarray, float, float]:
         h, w = img.shape[:2]
         scale = self.detection_scale

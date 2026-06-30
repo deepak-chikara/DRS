@@ -271,6 +271,7 @@ class DRSEngine:
     def reset_delivery(self) -> None:
         self.state.reset_delivery()
         self.event_detector.reset()
+        self.detector.reset_tracker()
         self._last_verdict = ""
 
     def notify_frame_position(self, frame_pos: int) -> None:
@@ -420,6 +421,21 @@ class DRSEngine:
             from drs.recording.delivery_clip import patch_call_record_ai
             patch_call_record_ai(self._last_drs_call_record_path, result.to_dict())
 
+        self._log_ai_audit(result)
+
+    def _log_ai_audit(self, result) -> None:
+        from drs.services.advisory.prompts import PROMPT_VERSION
+
+        if not self.session_log.deliveries:
+            return
+        record = self.session_log.deliveries[-1]
+        record.ai_advisory = {
+            **result.to_dict(),
+            "prompt_version": PROMPT_VERSION,
+            "model": self.config.ollama_model,
+            "provider": self.config.ai_provider,
+        }
+
     def _ai_advisory_dict_from_state(self) -> dict | None:
         if not self.state.ai_verdict:
             return None
@@ -429,6 +445,13 @@ class DRSEngine:
         }
 
     def read_frame(self, playback: PlaybackState) -> tuple[np.ndarray | None, bool]:
+        if playback.mode == ViewMode.BUFFER:
+            entry = self.ring_buffer.get_at(playback.buffer_index)
+            if entry is None:
+                return None, False
+            frame = entry.combined_frame if entry.combined_frame is not None else entry.primary_frame
+            return frame, True
+
         if self.config.mode == "live":
             pkt = self._grabber.read_latest() if self._grabber else None
             if pkt is None:

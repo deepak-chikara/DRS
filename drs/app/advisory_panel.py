@@ -36,12 +36,16 @@ class AdvisoryPanel(QWidget):
         self._caveats.setStyleSheet("color: #888;")
         self._clip = QLabel("")
         self._clip.setWordWrap(True)
+        self._disagreement = QLabel("")
+        self._disagreement.setWordWrap(True)
+        self._last_cv_verdict = ""
 
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.addWidget(self._status)
         layout.addWidget(self._sep())
         layout.addWidget(self._cv_verdict)
+        layout.addWidget(self._disagreement)
         layout.addWidget(self._confidence_label)
         layout.addWidget(self._confidence_bar)
         layout.addWidget(self._sep())
@@ -80,12 +84,17 @@ class AdvisoryPanel(QWidget):
     def set_analyzing(self) -> None:
         self._status.setText("Ollama: Analyzing…")
         self._status.setStyleSheet("font-weight: bold; color: #f39c12;")
+        self._ai_verdict.setText("AI recommendation: Analyzing…")
+        self._ai_verdict.setStyleSheet("color: #f39c12; font-weight: bold;")
 
     def show_evidence(self, evidence: DeliveryEvidence) -> None:
+        self._last_cv_verdict = evidence.cv_verdict
         live_tag = " [live]" if getattr(evidence, "live_analysis", False) else ""
         self._cv_verdict.setText(
             f"CV verdict: {evidence.cv_verdict}{live_tag} — {evidence.cv_reason}"
         )
+        self._disagreement.setText("")
+        self._disagreement.setStyleSheet("")
         self._apply_confidence(evidence.confidence_report)
         if getattr(evidence, "corridor_assessment", None) and evidence.corridor_assessment != "unknown":
             self._summary.setText(f"Line: {evidence.corridor_assessment}")
@@ -103,6 +112,17 @@ class AdvisoryPanel(QWidget):
         style = verdict_style.get(result.recommended_verdict, "")
         self._ai_verdict.setText(f"AI recommendation: {result.recommended_verdict}")
         self._ai_verdict.setStyleSheet(style)
+        cv = self._last_cv_verdict or "—"
+        if cv in ("OUT", "NOT OUT", "REVIEW") and result.recommended_verdict != cv:
+            self._disagreement.setText(
+                f"⚠ CV vs AI disagree: CV={cv}, AI={result.recommended_verdict}"
+            )
+            self._disagreement.setStyleSheet(
+                "color: #c62828; font-weight: bold; background: #fff3e0; padding: 4px;"
+            )
+        else:
+            self._disagreement.setText("CV and AI agree" if cv == result.recommended_verdict else "")
+            self._disagreement.setStyleSheet("color: #2e7d32; font-weight: bold;")
         conf_pct = int(result.confidence * 100)
         self._summary.setText(f"{result.summary} ({conf_pct}% AI confidence)")
         bullets = "\n".join(f"• {r}" for r in result.reasoning)

@@ -13,6 +13,28 @@ yolov8n.pt
 # Session output
 sessions/
 
+# Downloaded test clips (copyright — keep local only)
+tests/fixtures/videos/*.mp4
+tests/fixtures/videos/*.mov
+tests/fixtures/videos/*.avi
+lbw.mp4
+lbw-*.mp4
+
+# Build output (never commit — GitPrivate bundle is 500MB+)
+dist/
+build/drs/
+build/**/Analysis-*.toc
+build/**/COLLECT-*.toc
+build/**/EXE-*.toc
+build/**/PKG-*.toc
+build/**/PYZ-*.toc
+build/**/*.pkg
+build/**/*.pyz
+build/**/xref-*.html
+build/**/warn-*.txt
+build/**/base_library.zip
+build/**/*.exe
+
 # Embedded Python runtime (do not commit)
 Lib/
 DLLs/
